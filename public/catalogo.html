@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="es"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Catálogo — Agro Market ULEAM</title>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <link rel="stylesheet" href="css/style.css">
+</head><body>
+<nav class="navbar navbar-expand-lg navbar-dark" style="background-color:#1B5E20">
+  <div class="container">
+    <a class="navbar-brand fw-bold" href="catalogo.html">🌱 Agro Market ULEAM</a>
+    <div class="navbar-nav ms-auto">
+      <a class="nav-link text-white" href="mis-pedidos.html">
+        <i class="bi bi-bag-check"></i> Mis Pedidos</a>
+      <span class="nav-link text-white">
+        <i class="bi bi-person-circle"></i> <span id="usuario-nombre"></span></span>
+      <a class="nav-link text-white" href="#" onclick="cerrarSesion()">
+        <i class="bi bi-box-arrow-right"></i> Salir</a>
+    </div>
+  </div>
+</nav>
+<div class="container py-4">
+  <h4 class="fw-bold text-success mb-4">🛒 Catálogo de Productos</h4>
+
+  <!-- Búsqueda básica -->
+  <div class="mb-4">
+    <input type="text" id="busqueda" class="form-control" style="max-width:350px"
+           placeholder="Buscar producto..." oninput="filtrar()">
+  </div>
+
+  <!-- Grid de productos -->
+  <div id="productos-grid" class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3">
+    <div class="col-12 text-center py-5">
+      <div class="spinner-border text-success"></div>
+      <p class="text-muted mt-2">Cargando productos...</p>
+    </div>
+  </div>
+</div>
+
+  <script src="js/firebase-config.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/db.js"></script>
+<script>
+  // MOO: POLIMORFISMO — protegerPagina actúa según el rol
+  protegerPagina(["cliente", "administrador"]);
+
+  let todosLosProductos = [];
+
+  async function iniciarPagina() {
+    cargarNavbar();
+    todosLosProductos = await listarProductos();
+    renderProductos(todosLosProductos);
+  }
+
+  function filtrar() {
+    const busqueda = document.getElementById("busqueda").value.toLowerCase();
+    const filtrados = todosLosProductos.filter(p =>
+      p.nombre.toLowerCase().includes(busqueda)
+    );
+    renderProductos(filtrados);
+  }
+
+  function renderProductos(productos) {
+    const grid = document.getElementById("productos-grid");
+
+    if (productos.length === 0) {
+      grid.innerHTML = `<div class="col-12 text-center py-5">
+        <p class="text-muted">No se encontraron productos.</p></div>`;
+      return;
+    }
+
+    grid.innerHTML = productos.map(p => `
+      <div class="col">
+        <div class="card h-100 shadow-sm border-0">
+          ${p.imagen_url
+            ? `<img src="${p.imagen_url}" class="card-img-top producto-img">`
+            : `<div class="producto-img bg-light d-flex align-items-center
+                         justify-content-center fs-1">🌿</div>`}
+          <div class="card-body p-2">
+            <h6 class="fw-bold mb-1">${p.nombre}</h6>
+            <div class="d-flex justify-content-between align-items-center">
+              <span class="text-success fw-bold">${fmt(p.precio)}</span>
+              <small class="text-muted">/${p.unidad || "unidad"}</small>
+            </div>
+            <small class="text-muted">Stock: ${p.stock_actual ?? 0}</small>
+          </div>
+          <div class="card-footer bg-white border-0 p-2">
+            ${(p.stock_actual ?? 0) > 0
+              ? `<button class="btn btn-success btn-sm w-100"
+                  onclick="agregarAlCarrito('${p.id}','${p.nombre}',${p.precio})">
+                  <i class="bi bi-cart-plus"></i> Agregar</button>`
+              : `<button class="btn btn-secondary btn-sm w-100" disabled>Sin stock</button>`
+            }
+          </div>
+        </div>
+      </div>`).join("");
+  }
+
+  // Carrito simple en localStorage
+  function agregarAlCarrito(id, nombre, precio) {
+    const carrito = JSON.parse(localStorage.getItem("carrito") || "{}");
+    carrito[id] = { nombre, precio, cantidad: (carrito[id]?.cantidad || 0) + 1 };
+    localStorage.setItem("carrito", JSON.stringify(carrito));
+    mostrarToast(`${nombre} agregado al carrito ✓`);
+  }
+</script>
+</body></html>

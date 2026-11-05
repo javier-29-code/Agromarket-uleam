@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="es"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Mis Pedidos — Agro Market ULEAM</title>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <link rel="stylesheet" href="css/style.css">
+</head><body>
+<nav class="navbar navbar-expand-lg navbar-dark" style="background-color:#1B5E20">
+  <div class="container">
+    <a class="navbar-brand fw-bold" href="catalogo.html">🌱 Agro Market ULEAM</a>
+    <div class="navbar-nav ms-auto">
+      <a class="nav-link text-white" href="mis-pedidos.html">
+        <i class="bi bi-bag-check"></i> Mis Pedidos</a>
+      <span class="nav-link text-white">
+        <i class="bi bi-person-circle"></i> <span id="usuario-nombre"></span></span>
+      <a class="nav-link text-white" href="#" onclick="cerrarSesion()">
+        <i class="bi bi-box-arrow-right"></i> Salir</a>
+    </div>
+  </div>
+</nav>
+<div class="container py-4">
+  <h4 class="fw-bold text-success mb-4">📦 Mis Pedidos</h4>
+  <div id="lista-pedidos">
+    <div class="text-center py-5">
+      <div class="spinner-border text-success"></div>
+    </div>
+  </div>
+</div>
+  <script src="js/firebase-config.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/db.js"></script>
+<script>
+  protegerPagina(["cliente", "administrador"]);
+
+  async function iniciarPagina() {
+    cargarNavbar();
+    const user = auth.currentUser;
+    const pedidos = await listarPedidosCliente(user.uid);
+    const el = document.getElementById("lista-pedidos");
+
+    if (!pedidos.length) {
+      el.innerHTML = `<div class="text-center py-5">
+        <p class="text-muted">Aún no tienes pedidos.</p>
+        <a href="catalogo.html" class="btn btn-success">Ver catálogo</a>
+      </div>`;
+      return;
+    }
+
+    const colorEstado = {
+      pendiente:"warning", confirmado:"info",
+      en_preparacion:"primary", en_camino:"secondary",
+      entregado:"success", cancelado:"danger"
+    };
+
+    el.innerHTML = `<div class="list-group">
+      ${pedidos.map(p => `
+        <div class="list-group-item">
+          <div class="d-flex justify-content-between">
+            <div>
+              <h6 class="fw-bold mb-1">Pedido #${p.id.slice(0,8).toUpperCase()}</h6>
+              <small class="text-muted">
+                ${p.created_at?.toDate?.()?.toLocaleDateString("es-EC") || ""}
+              </small>
+            </div>
+            <div class="text-end">
+              <span class="badge bg-${colorEstado[p.estado]||"secondary"} d-block mb-1">
+                ${ETIQUETAS_ESTADO[p.estado] || p.estado}
+              </span>
+              <span class="fw-bold text-success">${fmt(p.total || 0)}</span>
+            </div>
+          </div>
+        </div>`).join("")}
+    </div>`;
+  }
+</script>
+</body></html>

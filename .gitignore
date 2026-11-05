@@ -1,0 +1,15 @@
+# Dependencias
+node_modules/
+
+# Configuración local
+.env
+.env.*
+!.env.example
+
+# Archivos temporales de Firebase
+.firebase/
+*-debug.log*
+
+# Sistema operativo
+Thumbs.db
+.DS_Store

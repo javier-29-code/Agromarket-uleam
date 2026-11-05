@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="es"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Productos — Admin</title>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <link rel="stylesheet" href="../css/style.css">
+</head><body>
+<nav class="navbar navbar-dark" style="background-color:#1B5E20">
+  <div class="container-fluid">
+    <a class="navbar-brand fw-bold" href="dashboard.html">⚙️ Admin — Agro Market</a>
+    <div class="navbar-nav flex-row gap-3">
+      <a class="nav-link text-white" href="dashboard.html">Dashboard</a>
+      <a class="nav-link text-white" href="productos.html">Productos</a>
+      <a class="nav-link text-white" href="pedidos.html">Pedidos</a>
+      <a class="nav-link text-white" href="../catalogo.html">Ver sitio</a>
+      <a class="nav-link text-white" href="#" onclick="cerrarSesion()">Salir</a>
+    </div>
+  </div>
+</nav>
+<div class="container py-4">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h4 class="fw-bold text-success mb-0">🌿 Productos</h4>
+    <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#modalNuevo">
+      <i class="bi bi-plus-lg"></i> Nuevo producto
+    </button>
+  </div>
+  <div class="card shadow-sm border-0">
+    <div id="tabla-productos">
+      <div class="p-4 text-center"><div class="spinner-border text-success"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal nuevo producto -->
+<div class="modal fade" id="modalNuevo" tabindex="-1">
+  <div class="modal-dialog"><div class="modal-content">
+    <div class="modal-header bg-success text-white">
+      <h5 class="modal-title">Nuevo Producto</h5>
+      <button class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+    </div>
+    <div class="modal-body">
+      <div class="mb-3">
+        <label class="form-label">Nombre *</label>
+        <input type="text" id="np-nombre" class="form-control">
+      </div>
+      <div class="row g-2 mb-3">
+        <div class="col-6">
+          <label class="form-label">Precio *</label>
+          <div class="input-group">
+            <span class="input-group-text">$</span>
+            <input type="number" id="np-precio" class="form-control" step="0.01" min="0">
+          </div>
+        </div>
+        <div class="col-6">
+          <label class="form-label">Unidad</label>
+          <select id="np-unidad" class="form-select">
+            <option value="unidad">Unidad</option>
+            <option value="kg">Kilogramo (kg)</option>
+            <option value="lb">Libra (lb)</option>
+            <option value="manojo">Manojo</option>
+            <option value="docena">Docena</option>
+          </select>
+        </div>
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Stock inicial</label>
+        <input type="number" id="np-stock" class="form-control" value="0" min="0">
+      </div>
+      <div class="mb-3">
+        <label class="form-label">Descripción</label>
+        <textarea id="np-desc" class="form-control" rows="2"></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" data-bs-dismiss="modal">Cancelar</button>
+      <button class="btn btn-success" onclick="guardarProducto()">Guardar</button>
+    </div>
+  </div></div>
+</div>
+
+  <script src="../js/firebase-config.js"></script>
+  <script src="../js/auth.js"></script>
+  <script src="../js/db.js"></script>
+<script>
+  protegerPagina(["administrador"]);
+
+  async function iniciarPagina() {
+    cargarNavbar();
+    cargarProductos();
+  }
+
+  async function cargarProductos() {
+    const snap = await db.collection("productos").orderBy("nombre").get();
+    const prods = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const el = document.getElementById("tabla-productos");
+
+    if (!prods.length) {
+      el.innerHTML = `<p class="text-center text-muted p-4">
+        No hay productos. Agrega el primero.</p>`;
+      return;
+    }
+
+    el.innerHTML = `<table class="table mb-0 align-middle">
+      <thead class="table-success">
+        <tr><th>Producto</th><th>Precio</th><th class="text-center">Stock</th>
+            <th class="text-center">Estado</th></tr>
+      </thead>
+      <tbody>
+        ${prods.map(p => `<tr>
+          <td>
+            <div class="fw-semibold">${p.nombre}</div>
+            <small class="text-muted">${p.descripcion || ""}</small>
+          </td>
+          <td class="fw-bold text-success">${fmt(p.precio)} /${p.unidad}</td>
+          <td class="text-center ${(p.stock_actual||0)<=0?"text-danger fw-bold":""}">
+            ${p.stock_actual ?? 0}
+          </td>
+          <td class="text-center">
+            <span class="badge bg-${p.activo?"success":"secondary"}">
+              ${p.activo ? "Activo" : "Inactivo"}
+            </span>
+          </td>
+        </tr>`).join("")}
+      </tbody>
+    </table>`;
+  }
+
+  async function guardarProducto() {
+    const nombre = document.getElementById("np-nombre").value.trim();
+    const precio = parseFloat(document.getElementById("np-precio").value) || 0;
+    if (!nombre || precio <= 0) {
+      mostrarToast("Completa nombre y precio", "warning"); return;
+    }
+    await db.collection("productos").add({
+      nombre,
+      precio,
+      unidad:       document.getElementById("np-unidad").value,
+      descripcion:  document.getElementById("np-desc").value.trim(),
+      stock_actual: parseInt(document.getElementById("np-stock").value) || 0,
+      activo:       true,
+      created_at:   firebase.firestore.FieldValue.serverTimestamp()
+    });
+    bootstrap.Modal.getInstance(document.getElementById("modalNuevo")).hide();
+    mostrarToast("Producto creado ✓");
+    // Limpiar formulario
+    ["np-nombre","np-precio","np-stock","np-desc"].forEach(id =>
+      document.getElementById(id).value = "");
+    cargarProductos();
+  }
+</script>
+</body></html>
