@@ -87,6 +87,89 @@
   </div></div>
 </div>
 
+<!-- Formulario de movimiento de stock -->
+<div class="modal fade" id="modalStock" tabindex="-1"
+     aria-labelledby="titulo-modal-stock" aria-hidden="true">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header bg-success text-white">
+        <h5 class="modal-title" id="titulo-modal-stock">
+          Movimiento de stock
+        </h5>
+        <button type="button" class="btn-close btn-close-white"
+                data-bs-dismiss="modal" aria-label="Cerrar"></button>
+      </div>
+
+      <form id="form-stock">
+        <div class="modal-body">
+          <p class="fw-bold mb-1" id="stock-producto-nombre"></p>
+          <p class="text-muted" id="stock-producto-disponible"></p>
+
+          <div class="mb-3">
+            <label for="stock-tipo" class="form-label">Tipo</label>
+            <select id="stock-tipo" class="form-select" required>
+              <option value="entrada">Entrada: aumentar existencias</option>
+              <option value="salida">Salida: reducir existencias</option>
+            </select>
+          </div>
+
+          <div class="mb-3">
+            <label for="stock-cantidad" class="form-label">Cantidad</label>
+            <input type="number" id="stock-cantidad"
+                   class="form-control"
+                   min="0.001" step="0.001" required>
+          </div>
+
+          <div class="mb-3">
+            <label for="stock-motivo" class="form-label">Motivo</label>
+            <textarea id="stock-motivo" class="form-control"
+                      rows="2" maxlength="300" required></textarea>
+          </div>
+
+          <div id="stock-error" class="alert alert-danger d-none"
+               role="alert"></div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary"
+                  data-bs-dismiss="modal">Cancelar</button>
+          <button type="submit" class="btn btn-success"
+                  id="btn-guardar-stock">
+            Registrar movimiento
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="modal fade" id="modalHistorialStock" tabindex="-1"
+     aria-labelledby="titulo-historial-stock" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header bg-success text-white">
+        <h5 class="modal-title" id="titulo-historial-stock">
+          Historial de stock
+        </h5>
+        <button type="button" class="btn-close btn-close-white"
+                data-bs-dismiss="modal" aria-label="Cerrar"></button>
+      </div>
+
+      <div class="modal-body">
+        <p id="historial-producto-nombre" class="fw-bold"></p>
+        <div id="historial-stock-contenido" class="table-responsive"></div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary"
+                data-bs-dismiss="modal">
+          Cerrar
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
   <script src="../js/firebase-config.js"></script>
   <script src="../js/auth.js"></script>
   <script src="../js/db.js"></script>
@@ -195,6 +278,21 @@ async function editarProducto(id) {
             onclick="editarProducto('${p.id}')">
             editar
             </button>
+
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-secondary"
+              onclick="abrirMovimientoStock('${p.id}')">
+              Stock
+            </button>
+
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-info"
+              onclick="abrirHistorialStock('${p.id}')">
+              Historial
+            </button>
+
           </td>
         </tr>`).join("")}
       </tbody>
@@ -339,6 +437,190 @@ async function actualizarProducto(id, datos) {
     ...producto,
     updated_at: firebase.firestore.FieldValue.serverTimestamp()
   });
+}
+
+let productoStockId = null;
+let guardandoStock = false;
+
+async function abrirMovimientoStock(id) {
+  try {
+    const producto = await obtenerProducto(id);
+
+    if (!producto) {
+      throw new Error("El producto ya no existe.");
+    }
+
+    productoStockId = id;
+
+    document.getElementById("form-stock").reset();
+
+    const error = document.getElementById("stock-error");
+    error.textContent = "";
+    error.classList.add("d-none");
+
+    document.getElementById("stock-producto-nombre").textContent =
+      producto.nombre;
+
+    document.getElementById("stock-producto-disponible").textContent =
+      `Disponible: ${producto.stock_actual ?? 0} ${producto.unidad}`;
+
+    bootstrap.Modal.getOrCreateInstance(
+      document.getElementById("modalStock")
+    ).show();
+  } catch (error) {
+    console.error("Error al abrir el movimiento:", error);
+    mostrarToast("No se pudo cargar el producto.", "danger");
+  }
+}
+
+document.getElementById("form-stock").addEventListener(
+  "submit",
+  guardarMovimientoStock
+);
+
+// Evitar cerrar el formulario mientras se está guardando.
+document.getElementById("modalStock").addEventListener(
+  "hide.bs.modal",
+  evento => {
+    if (guardandoStock) {
+      evento.preventDefault();
+    }
+  }
+);
+
+async function guardarMovimientoStock(evento) {
+  evento.preventDefault();
+
+  if (guardandoStock || !productoStockId) return;
+
+  const boton = document.getElementById("btn-guardar-stock");
+  const errorVisible = document.getElementById("stock-error");
+
+  guardandoStock = true;
+  boton.disabled = true;
+  errorVisible.classList.add("d-none");
+
+  let nuevoStock;
+
+  try {
+    nuevoStock = await registrarMovimientoStock(
+      productoStockId,
+      document.getElementById("stock-tipo").value,
+      document.getElementById("stock-cantidad").value,
+      document.getElementById("stock-motivo").value
+    );
+  } catch (error) {
+    console.error("Error al registrar el movimiento:", error);
+
+    errorVisible.textContent = error.code
+      ? "No se pudo guardar. Revisa tu conexión y tus permisos."
+      : error.message;
+
+    errorVisible.classList.remove("d-none");
+    return;
+  } finally {
+    guardandoStock = false;
+    boton.disabled = false;
+  }
+
+  bootstrap.Modal.getInstance(
+    document.getElementById("modalStock")
+  ).hide();
+
+  productoStockId = null;
+
+  mostrarToast(`Movimiento registrado. Nuevo stock: ${nuevoStock}.`);
+
+  try {
+    await cargarProductos();
+  } catch (error) {
+    console.error("Error al actualizar la tabla:", error);
+    mostrarToast(
+      "El movimiento se guardó. Recarga para ver el nuevo stock.",
+      "warning"
+    );
+  }
+}
+
+let solicitudHistorial = 0;
+
+async function abrirHistorialStock(productoId) {
+  const solicitudActual = ++solicitudHistorial;
+  const contenido = document.getElementById("historial-stock-contenido");
+  const nombre = document.getElementById("historial-producto-nombre");
+
+  nombre.textContent = "";
+  contenido.textContent = "Cargando movimientos...";
+
+  bootstrap.Modal.getOrCreateInstance(
+    document.getElementById("modalHistorialStock")
+  ).show();
+
+  try {
+    const [producto, movimientos] = await Promise.all([
+      obtenerProducto(productoId),
+      listarMovimientosProducto(productoId)
+    ]);
+
+    // Evitar mostrar una respuesta anterior si se abrió otro producto.
+    if (solicitudActual !== solicitudHistorial) return;
+
+    nombre.textContent = producto?.nombre ?? "Producto no disponible";
+    mostrarHistorialStock(movimientos);
+  } catch (error) {
+    if (solicitudActual !== solicitudHistorial) return;
+
+    console.error("Error al cargar el historial:", error);
+    contenido.textContent = "No se pudo cargar el historial.";
+  }
+}
+
+function mostrarHistorialStock(movimientos) {
+  const contenido = document.getElementById("historial-stock-contenido");
+  contenido.replaceChildren();
+
+  if (!movimientos.length) {
+    contenido.textContent = "Este producto todavía no tiene movimientos.";
+    return;
+  }
+
+  const tabla = document.createElement("table");
+  tabla.className = "table table-sm align-middle";
+
+  const encabezado = tabla.createTHead().insertRow();
+
+  ["Fecha", "Tipo", "Cantidad", "Anterior", "Nuevo", "Motivo"]
+    .forEach(titulo => {
+      const celda = document.createElement("th");
+      celda.textContent = titulo;
+      encabezado.appendChild(celda);
+    });
+
+  const cuerpo = tabla.createTBody();
+
+  movimientos.forEach(movimiento => {
+    const fila = cuerpo.insertRow();
+
+    const fecha = movimiento.created_at?.toDate().toLocaleString(
+      "es-EC",
+      { timeZone: "America/Guayaquil" }
+    ) ?? "Fecha pendiente";
+
+    const valores = [
+      fecha,
+      movimiento.tipo === "entrada" ? "Entrada" : "Salida",
+      movimiento.cantidad,
+      movimiento.stock_anterior,
+      movimiento.stock_nuevo,
+      movimiento.motivo
+    ];
+
+    valores.forEach(valor => {
+      fila.insertCell().textContent = String(valor ?? "");
+    });
+  });
+
+  contenido.appendChild(tabla);
 }
 
 </script>

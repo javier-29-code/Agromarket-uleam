@@ -187,3 +187,113 @@ async function actualizarProducto(id, datos) {
     updated_at: firebase.firestore.FieldValue.serverTimestamp()
   });
 }
+
+async function registrarMovimientoStock(
+  productoId,
+  tipo,
+  cantidad,
+  motivo
+) {
+  const usuario = auth.currentUser;
+  const cantidadNumero = Number(cantidad);
+  const motivoLimpio = motivo.trim();
+
+  if (!usuario) {
+    throw new Error("Debes iniciar sesión.");
+  }
+
+  if (!["entrada", "salida"].includes(tipo)) {
+    throw new Error("Selecciona entrada o salida.");
+  }
+
+  if (!Number.isFinite(cantidadNumero) || cantidadNumero <= 0) {
+    throw new Error("La cantidad debe ser mayor que cero.");
+  }
+
+  // Trabajar con milésimas evita errores al sumar decimales.
+  const cantidadMilesimas = Math.round(cantidadNumero * 1000);
+
+  if (
+    !Number.isSafeInteger(cantidadMilesimas) ||
+    cantidadMilesimas <= 0 ||
+    Math.abs(cantidadNumero * 1000 - cantidadMilesimas) > 0.000001
+  ) {
+    throw new Error("La cantidad admite hasta tres decimales.");
+  }
+
+  if (!motivoLimpio || motivoLimpio.length > 300) {
+    throw new Error("Escribe un motivo de entre 1 y 300 caracteres.");
+  }
+
+  const productoRef = db.collection("productos").doc(productoId);
+  const movimientoRef = db.collection("movimientos_stock").doc();
+
+  return db.runTransaction(async transaccion => {
+    const documento = await transaccion.get(productoRef);
+
+    if (!documento.exists) {
+      throw new Error("El producto no existe.");
+    }
+
+    const producto = documento.data();
+    const stockActual = producto.stock_actual;
+
+    if (
+      typeof stockActual !== "number" ||
+      !Number.isFinite(stockActual) ||
+      stockActual < 0
+    ) {
+      throw new Error("El producto tiene un stock inválido.");
+    }
+
+    const stockMilesimas = Math.round(stockActual * 1000);
+    const nuevoSaldoMilesimas = tipo === "entrada"
+      ? stockMilesimas + cantidadMilesimas
+      : stockMilesimas - cantidadMilesimas;
+
+    if (
+      !Number.isSafeInteger(stockMilesimas) ||
+      !Number.isSafeInteger(nuevoSaldoMilesimas)
+    ) {
+      throw new Error("La cantidad supera el límite permitido.");
+    }
+
+    if (nuevoSaldoMilesimas < 0) {
+      throw new Error(`Stock insuficiente. Disponible: ${stockActual}.`);
+    }
+
+    const nuevoStock = nuevoSaldoMilesimas / 1000;
+    const fecha = firebase.firestore.FieldValue.serverTimestamp();
+
+    transaccion.update(productoRef, {
+      stock_actual: nuevoStock,
+      updated_at: fecha
+    });
+
+    transaccion.set(movimientoRef, {
+      producto_id: productoId,
+      tipo,
+      cantidad: cantidadMilesimas / 1000,
+      motivo: motivoLimpio,
+      stock_anterior: stockActual,
+      stock_nuevo: nuevoStock,
+      usuario_id: usuario.uid,
+      created_at: fecha
+    });
+
+    return nuevoStock;
+  });
+}
+
+async function listarMovimientosProducto(productoId) {
+  const snap = await db.collection("movimientos_stock")
+    .where("producto_id", "==", productoId)
+    .get();
+
+  return snap.docs
+    .map(doc => ({ ...doc.data(), id: doc.id }))
+    .sort((a, b) =>
+      (b.created_at?.toMillis() ?? 0) -
+      (a.created_at?.toMillis() ?? 0)
+    );
+}

@@ -59,6 +59,24 @@ service cloud.firestore {
       allow create, update, delete: if esAdministrador();
     }
 
+    match /movimientos_stock/{movimientoId} {
+      allow read: if esAdministrador();
+
+      allow create: if esAdministrador()
+        && request.resource.data.usuario_id == request.auth.uid
+        && request.resource.data.tipo in ["entrada", "salida"]
+        && request.resource.data.cantidad is number
+        && request.resource.data.cantidad > 0
+        && request.resource.data.motivo is string
+        && request.resource.data.motivo.size() > 0
+        && request.resource.data.motivo.size() <= 300
+        && request.resource.data.stock_anterior is number
+        && request.resource.data.stock_anterior >= 0
+        && request.resource.data.stock_nuevo is number
+        && request.resource.data.stock_nuevo >= 0
+        && request.resource.data.created_at == request.time;
+    }
+
     // Las demás colecciones permanecen bloqueadas.
     match /{documento=**} {
       allow read, write: if false;
