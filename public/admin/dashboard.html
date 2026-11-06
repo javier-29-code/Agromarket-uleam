@@ -93,14 +93,20 @@
   protegerPagina(["administrador"]);
 
   async function iniciarPagina() {
-    cargarNavbar();
+    try {
+      await cargarNavbar();
 
-    // Cargar métricas básicas
-    const [snapPedidos, snapProductos] = await Promise.all([
-      db.collection("pedidos").get(),
-      db.collection("productos").where("activo","==",true).get()
-    ]);
-
+      const resumen = await obtenerResumenProductos();
+      document.getElementById("cnt-productos").textContent = resumen.activos;
+      document.getElementById("cnt-sin-stock").textContent = resumen.sinStock;
+    }
+    catch (error) {
+      console.error("Error al cargar el dashboard:", error);
+      mostrarToast(
+        "No se pudo cargar el resumen de productos.",
+        "danger"
+    );
+    }
   }
 </script>
 </body></html>

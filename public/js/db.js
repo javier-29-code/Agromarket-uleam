@@ -111,3 +111,79 @@ async function cambiarEstado(pedidoId, pedido, nuevoEstado, nota = "") {
 }
 
 // TODO: Implementar listarTodosPedidos() para el admin
+async function obtenerResumenProductos() {
+  const productos = await listarProductos();
+
+  return {
+    activos: productos.length,
+    sinStock: productos.filter(
+      producto => (producto.stock_actual ?? 0) <= 0
+    ).length
+  };
+}
+
+async function cambiarEstadoActivoProducto(id, activo) {
+  if (typeof activo !== "boolean") {
+    throw new Error("El estado del producto debe ser booleano.");
+  }
+
+  await db.collection("productos").doc(id).update({
+    activo,
+    updated_at: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}
+
+function validarDatosProducto(datos) {
+  const nombre = datos.nombre.trim();
+  const descripcion = datos.descripcion.trim();
+  const precio = Number(datos.precio);
+  const unidades = ["unidad", "kg", "lb", "manojo", "docena"];
+
+  if (!nombre || nombre.length > 100) {
+    throw new Error("El nombre debe tener entre 1 y 100 caracteres.");
+  }
+
+  if (!Number.isFinite(precio) || precio <= 0) {
+    throw new Error("Ingresa un precio válido mayor que cero.");
+  }
+
+  if (!unidades.includes(datos.unidad)) {
+    throw new Error("Selecciona una unidad válida.");
+  }
+
+  if (descripcion.length > 1000) {
+    throw new Error("La descripción admite hasta 1000 caracteres.");
+  }
+
+  return {
+    nombre,
+    descripcion,
+    precio: Math.round(precio * 100) / 100,
+    unidad: datos.unidad
+  };
+}
+
+async function crearProducto(datos) {
+  const producto = validarDatosProducto(datos);
+  const stock = Number(datos.stock_actual);
+
+  if (!Number.isFinite(stock) || stock < 0) {
+    throw new Error("El stock debe ser un número mayor o igual a cero.");
+  }
+
+  return db.collection("productos").add({
+    ...producto,
+    stock_actual: stock,
+    activo: true,
+    created_at: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}
+
+async function actualizarProducto(id, datos) {
+  const producto = validarDatosProducto(datos);
+
+  await db.collection("productos").doc(id).update({
+    ...producto,
+    updated_at: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}

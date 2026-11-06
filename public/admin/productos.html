@@ -25,8 +25,12 @@
 <div class="container py-4">
   <div class="d-flex justify-content-between align-items-center mb-3">
     <h4 class="fw-bold text-success mb-0">🌿 Productos</h4>
-    <button class="btn btn-success" data-bs-toggle="modal" data-bs-target="#modalNuevo">
-      <i class="bi bi-plus-lg"></i> Nuevo producto
+    <button 
+    class="btn btn-success"
+    data-bs-toggle="modal"
+    data-bs-target="#modalNuevo"
+    onclick="prepararNuevoProducto()">
+    <i class="bi bi-plus-lg"></i> Nuevo producto
     </button>
   </div>
   <div class="card shadow-sm border-0">
@@ -87,6 +91,56 @@
   <script src="../js/auth.js"></script>
   <script src="../js/db.js"></script>
 <script>
+
+  let productoEnEdicion = null;
+
+function prepararNuevoProducto() {
+  productoEnEdicion = null;
+
+  document.querySelector("#modalNuevo .modal-title").textContent =
+    "Nuevo producto";
+
+  document.getElementById("np-nombre").value = "";
+  document.getElementById("np-precio").value = "";
+  document.getElementById("np-unidad").value = "unidad";
+  document.getElementById("np-stock").value = "0";
+  document.getElementById("np-stock").disabled = false;
+  document.getElementById("np-desc").value = "";
+}
+
+async function editarProducto(id) {
+  try {
+    const producto = await obtenerProducto(id);
+
+    if (!producto) {
+      throw new Error("El producto ya no existe.");
+    }
+
+    prepararNuevoProducto();
+    productoEnEdicion = id;
+
+    document.querySelector("#modalNuevo .modal-title").textContent =
+      "Editar producto";
+
+    document.getElementById("np-nombre").value = producto.nombre;
+    document.getElementById("np-precio").value = producto.precio;
+    document.getElementById("np-unidad").value = producto.unidad;
+    document.getElementById("np-desc").value =
+      producto.descripcion ?? "";
+
+    document.getElementById("np-stock").value =
+      producto.stock_actual ?? 0;
+    document.getElementById("np-stock").disabled = true;
+
+    bootstrap.Modal.getOrCreateInstance(
+      document.getElementById("modalNuevo")
+    ).show();
+  } catch (error) {
+    console.error("Error al abrir el producto:", error);
+    mostrarToast("No se pudo abrir el producto para editar.", "danger");
+  }
+}
+
   protegerPagina(["administrador"]);
 
   async function iniciarPagina() {
@@ -108,7 +162,9 @@
     el.innerHTML = `<table class="table mb-0 align-middle">
       <thead class="table-success">
         <tr><th>Producto</th><th>Precio</th><th class="text-center">Stock</th>
-            <th class="text-center">Estado</th></tr>
+            <th class="text-center">Estado</th>
+            <th class="text-center">Acciones</th>
+            </tr>
       </thead>
       <tbody>
         ${prods.map(p => `<tr>
@@ -125,32 +181,165 @@
               ${p.activo ? "Activo" : "Inactivo"}
             </span>
           </td>
+          <td class="text-center">
+            <button
+            type="button"
+            class="btn btn-sm btn-outline-${p.activo ? "danger" : "success"}"
+            onclick="cambiarVisibilidadProducto('${p.id}', ${!p.activo}, this)">
+            ${p.activo ? "Desactivar" : "Reactivar"}
+            </button>
+
+            <button
+            type="button"
+            class="btn btn-sm btn-outline-primary me-1"
+            onclick="editarProducto('${p.id}')">
+            editar
+            </button>
+          </td>
         </tr>`).join("")}
       </tbody>
     </table>`;
   }
 
-  async function guardarProducto() {
-    const nombre = document.getElementById("np-nombre").value.trim();
-    const precio = parseFloat(document.getElementById("np-precio").value) || 0;
-    if (!nombre || precio <= 0) {
-      mostrarToast("Completa nombre y precio", "warning"); return;
-    }
-    await db.collection("productos").add({
-      nombre,
-      precio,
-      unidad:       document.getElementById("np-unidad").value,
-      descripcion:  document.getElementById("np-desc").value.trim(),
-      stock_actual: parseInt(document.getElementById("np-stock").value) || 0,
-      activo:       true,
-      created_at:   firebase.firestore.FieldValue.serverTimestamp()
-    });
-    bootstrap.Modal.getInstance(document.getElementById("modalNuevo")).hide();
-    mostrarToast("Producto creado ✓");
-    // Limpiar formulario
-    ["np-nombre","np-precio","np-stock","np-desc"].forEach(id =>
-      document.getElementById(id).value = "");
-    cargarProductos();
+
+  async function cambiarVisibilidadProducto(id, activo, boton) {
+  boton.disabled = true;
+
+  try {
+    await cambiarEstadoActivoProducto(id, activo);
+    await cargarProductos();
+
+    mostrarToast(
+      activo ? "Producto reactivado." : "Producto desactivado."
+    );
+  } catch (error) {
+    console.error("Error al cambiar el estado del producto:", error);
+    mostrarToast("No se pudo cambiar el estado.", "danger");
+  } finally {
+    boton.disabled = false;
   }
+}
+
+async function guardarProducto() {
+  const boton = document.querySelector(
+    '#modalNuevo button[onclick="guardarProducto()"]'
+  );
+
+  boton.disabled = true;
+
+  try {
+    const datos = {
+      nombre: document.getElementById("np-nombre").value,
+      precio: document.getElementById("np-precio").value,
+      unidad: document.getElementById("np-unidad").value,
+      descripcion: document.getElementById("np-desc").value
+    };
+
+    const editando = productoEnEdicion !== null;
+
+    if (editando) {
+      await actualizarProducto(productoEnEdicion, datos);
+    } else {
+      const stockTexto = document.getElementById("np-stock").value;
+
+      if (!stockTexto.trim()) {
+        throw new Error("Ingresa el stock inicial.");
+      }
+
+      await crearProducto({
+        ...datos,
+        stock_actual: Number(stockTexto)
+      });
+    }
+
+    bootstrap.Modal.getInstance(
+      document.getElementById("modalNuevo")
+    ).hide();
+
+    prepararNuevoProducto();
+
+    mostrarToast(
+      editando ? "Producto actualizado." : "Producto creado."
+    );
+  } catch (error) {
+    console.error("Error al guardar el producto:", error);
+
+    mostrarToast(
+      error.code
+        ? "No se pudo guardar el producto."
+        : error.message,
+      "danger"
+    );
+    return;
+  } finally {
+    boton.disabled = false;
+  }
+
+  try {
+    await cargarProductos();
+  } catch (error) {
+    console.error("Error al actualizar la tabla:", error);
+    mostrarToast(
+      "El producto se guardó, pero debes recargar la tabla.",
+      "warning"
+    );
+  }
+}
+
+function validarDatosProducto(datos) {
+  const nombre = datos.nombre.trim();
+  const descripcion = datos.descripcion.trim();
+  const precio = Number(datos.precio);
+  const unidades = ["unidad", "kg", "lb", "manojo", "docena"];
+
+  if (!nombre || nombre.length > 100) {
+    throw new Error("El nombre debe tener entre 1 y 100 caracteres.");
+  }
+
+  if (!Number.isFinite(precio) || precio <= 0) {
+    throw new Error("Ingresa un precio válido mayor que cero.");
+  }
+
+  if (!unidades.includes(datos.unidad)) {
+    throw new Error("Selecciona una unidad válida.");
+  }
+
+  if (descripcion.length > 1000) {
+    throw new Error("La descripción admite hasta 1000 caracteres.");
+  }
+
+  return {
+    nombre,
+    descripcion,
+    precio: Math.round(precio * 100) / 100,
+    unidad: datos.unidad
+  };
+}
+
+async function crearProducto(datos) {
+  const producto = validarDatosProducto(datos);
+  const stock = Number(datos.stock_actual);
+
+  if (!Number.isFinite(stock) || stock < 0) {
+    throw new Error("El stock debe ser un número mayor o igual a cero.");
+  }
+
+  return db.collection("productos").add({
+    ...producto,
+    stock_actual: stock,
+    activo: true,
+    created_at: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}
+
+async function actualizarProducto(id, datos) {
+  const producto = validarDatosProducto(datos);
+
+  await db.collection("productos").doc(id).update({
+    ...producto,
+    updated_at: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}
+
 </script>
 </body></html>
