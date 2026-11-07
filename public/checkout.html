@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Revisar pedido — Agro Market ULEAM</title>
+
+  <link
+    href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+    rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+</head>
+
+<body>
+  <nav class="navbar navbar-dark bg-success">
+    <div class="container">
+      <a href="catalogo.html" class="navbar-brand fw-bold">
+        Agro Market ULEAM
+      </a>
+      <a href="carrito.html" class="text-white">Volver al carrito</a>
+    </div>
+  </nav>
+
+  <main class="container py-4">
+    <h1 class="h4 text-success mb-3">Revisar pedido</h1>
+
+    <div id="checkout-error" class="alert alert-danger d-none"
+         role="alert"></div>
+
+    <div id="checkout-cargando">Consultando precios y disponibilidad...</div>
+
+    <section id="checkout-resumen" class="d-none">
+      <div class="table-responsive">
+        <table class="table align-middle">
+          <thead class="table-success">
+            <tr>
+              <th>Producto</th>
+              <th>Cantidad</th>
+              <th>Precio unitario</th>
+              <th>Subtotal</th>
+            </tr>
+          </thead>
+          <tbody id="checkout-detalles"></tbody>
+        </table>
+      </div>
+
+      <div class="card mb-3">
+        <div class="card-body">
+          <p><strong>Entrega:</strong> retiro en Agro Market.</p>
+          <p class="mb-0">
+            <strong>Pago:</strong> efectivo al retirar.
+          </p>
+        </div>
+      </div>
+
+      <div class="mb-3">
+        <label for="pedido-notas" class="form-label">
+          Observaciones opcionales
+        </label>
+        <textarea id="pedido-notas" class="form-control"
+                  rows="2" maxlength="300"></textarea>
+      </div>
+
+      <p class="fs-5 fw-bold text-end" id="checkout-total"></p>
+
+      <p class="text-muted small">
+        El stock se comprobará nuevamente al confirmar el pedido.
+      </p>
+
+      <div class="d-flex justify-content-between">
+        <a href="carrito.html" class="btn btn-outline-success">
+          Modificar carrito
+        </a>
+        <button type="button" id="btn-confirmar-pedido"
+                class="btn btn-success" disabled>
+          Confirmar pedido
+        </button>
+      </div>
+    </section>
+  </main>
+
+  <script src="js/firebase-config.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/db.js"></script>
+  <script src="js/carrito.js"></script>
+
+  <script>
+    let resumenPedido = null;
+
+    async function iniciarPagina() {
+      try {
+        resumenPedido = await prepararResumenPedido();
+
+        const cuerpo = document.getElementById("checkout-detalles");
+        cuerpo.replaceChildren();
+
+        resumenPedido.detalles.forEach(detalle => {
+          const fila = cuerpo.insertRow();
+
+          [
+            detalle.nombre_producto,
+            `${detalle.cantidad} ${detalle.unidad ?? "unidad"}`,
+            fmt(detalle.precio_unitario),
+            fmt(detalle.subtotal)
+          ].forEach(valor => {
+            fila.insertCell().textContent = valor;
+          });
+        });
+
+        document.getElementById("checkout-total").textContent =
+          `Total: ${fmt(resumenPedido.total)}`;
+
+        document.getElementById("checkout-resumen")
+          .classList.remove("d-none");
+      } catch (error) {
+        console.error("Error al preparar el pedido:", error);
+
+        const aviso = document.getElementById("checkout-error");
+        aviso.textContent = error.code
+          ? "No se pudo consultar el pedido. Revisa tu conexión y permisos."
+          : error.message;
+
+        aviso.classList.remove("d-none");
+      } finally {
+        document.getElementById("checkout-cargando")
+          .classList.add("d-none");
+      }
+    }
+
+    protegerPagina(["cliente", "administrador"]);
+  </script>
+</body>
+</html>

@@ -16,6 +16,10 @@
     <div class="navbar-nav ms-auto">
       <a class="nav-link text-white" href="mis-pedidos.html">
         <i class="bi bi-bag-check"></i> Mis Pedidos</a>
+
+        <a class="nav-link text-white" href="carrito.html">
+          <i class="bi bi-cart"></i> Carrito
+        </a>
       <span class="nav-link text-white">
         <i class="bi bi-person-circle"></i> <span id="usuario-nombre"></span></span>
       <a class="nav-link text-white" href="#" onclick="cerrarSesion()">
@@ -44,6 +48,7 @@
   <script src="js/firebase-config.js"></script>
   <script src="js/auth.js"></script>
   <script src="js/db.js"></script>
+  <script src="js/carrito.js"></script>
 <script>
   // MOO: POLIMORFISMO — protegerPagina actúa según el rol
   protegerPagina(["cliente", "administrador"]);
@@ -91,7 +96,7 @@
           <div class="card-footer bg-white border-0 p-2">
             ${(p.stock_actual ?? 0) > 0
               ? `<button class="btn btn-success btn-sm w-100"
-                  onclick="agregarAlCarrito('${p.id}','${p.nombre}',${p.precio})">
+                  onclick="agregarAlCarrito('${p.id}')"
                   <i class="bi bi-cart-plus"></i> Agregar</button>`
               : `<button class="btn btn-secondary btn-sm w-100" disabled>Sin stock</button>`
             }
@@ -101,11 +106,28 @@
   }
 
   // Carrito simple en localStorage
-  function agregarAlCarrito(id, nombre, precio) {
-    const carrito = JSON.parse(localStorage.getItem("carrito") || "{}");
-    carrito[id] = { nombre, precio, cantidad: (carrito[id]?.cantidad || 0) + 1 };
-    localStorage.setItem("carrito", JSON.stringify(carrito));
-    mostrarToast(`${nombre} agregado al carrito ✓`);
+const productosAgregandose = new Set();
+
+async function agregarAlCarrito(id) {
+  if (productosAgregandose.has(id)) return;
+
+  productosAgregandose.add(id);
+
+  try {
+    const nombre = await agregarProductoAlCarrito(id);
+    mostrarToast(`${nombre} agregado al carrito.`);
+  } catch (error) {
+    console.error("Error al agregar al carrito:", error);
+
+    mostrarToast(
+      error.code
+        ? "No se pudo agregar el producto. Revisa tu conexión y permisos."
+        : error.message,
+      "danger"
+    );
+  } finally {
+    productosAgregandose.delete(id);
   }
+}
 </script>
 </body></html>
