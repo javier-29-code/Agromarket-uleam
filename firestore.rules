@@ -275,6 +275,36 @@ service cloud.firestore {
                 .hasAny(["entregado_en"])
         );
     }
+
+        function cancelacionRetiroValida() {
+      let anterior = resource.data;
+      let nuevo = request.resource.data;
+      let ultimo = nuevo.historial[anterior.historial.size()];
+
+      return esAdministrador()
+        && anterior.tipo == "retiro"
+        && anterior.estado in ["pendiente", "confirmado"]
+        && nuevo.estado == "cancelado"
+        && nuevo.diff(anterior).affectedKeys().hasOnly([
+          "estado", "historial", "updated_at", "cancelado_en"
+        ])
+        && nuevo.updated_at == request.time
+        && nuevo.cancelado_en == request.time
+        && nuevo.historial.size() == anterior.historial.size() + 1
+        && nuevo.historial == anterior.historial.concat([ultimo])
+        && ultimo.keys().hasAll([
+          "estado_nuevo", "fecha", "usuario_id", "nota"
+        ])
+        && ultimo.keys().hasOnly([
+          "estado_nuevo", "fecha", "usuario_id", "nota"
+        ])
+        && ultimo.estado_nuevo == "cancelado"
+        && ultimo.usuario_id == request.auth.uid
+        && ultimo.fecha is string
+        && ultimo.nota is string
+        && ultimo.nota.size() > 0
+        && ultimo.nota.size() <= 300;
+    }
     
 
     match /productos/{productoId} {
@@ -305,7 +335,8 @@ service cloud.firestore {
         );
 
       // Los cambios de estado se implementarán después.
-      allow update: if avanceRetiroValido();
+      allow update: if avanceRetiroValido()
+        || cancelacionRetiroValida();
       allow delete: if false;
     }
 

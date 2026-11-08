@@ -93,20 +93,46 @@
   protegerPagina(["administrador"]);
 
   async function iniciarPagina() {
-    try {
-      await cargarNavbar();
-
-      const resumen = await obtenerResumenProductos();
-      document.getElementById("cnt-productos").textContent = resumen.activos;
-      document.getElementById("cnt-sin-stock").textContent = resumen.sinStock;
-    }
-    catch (error) {
-      console.error("Error al cargar el dashboard:", error);
-      mostrarToast(
-        "No se pudo cargar el resumen de productos.",
-        "danger"
-    );
-    }
+  try {
+    await cargarNavbar();
+  } catch (error) {
+    console.error("Error al cargar el nombre del usuario:", error);
   }
+
+  const [productos, pedidos] = await Promise.allSettled([
+    obtenerResumenProductos(),
+    obtenerResumenPedidos()
+  ]);
+
+  if (productos.status === "fulfilled") {
+    document.getElementById("cnt-productos").textContent =
+      productos.value.activos;
+
+    document.getElementById("cnt-sin-stock").textContent =
+      productos.value.sinStock;
+  } else {
+    console.error("Error al consultar productos:", productos.reason);
+
+    document.getElementById("cnt-productos").textContent = "—";
+    document.getElementById("cnt-sin-stock").textContent = "—";
+
+    mostrarToast("No se pudo cargar el resumen de productos.", "danger");
+  }
+
+  if (pedidos.status === "fulfilled") {
+    document.getElementById("cnt-pendientes").textContent =
+      pedidos.value.pendientes;
+
+    document.getElementById("cnt-entregados").textContent =
+      pedidos.value.entregadosHoy;
+  } else {
+    console.error("Error al consultar pedidos:", pedidos.reason);
+
+    document.getElementById("cnt-pendientes").textContent = "—";
+    document.getElementById("cnt-entregados").textContent = "—";
+
+    mostrarToast("No se pudo cargar el resumen de pedidos.", "danger");
+  }
+}
 </script>
 </body></html>

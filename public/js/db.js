@@ -543,3 +543,176 @@ async function crearPedidoRetiro(
     return pedidoRef.id;
   });
 }
+
+async function obtenerResumenPedidos() {
+  const snap = await db.collection("pedidos").get();
+
+  const formatoFecha = new Intl.DateTimeFormat("es-EC", {
+    timeZone: "America/Guayaquil",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  });
+
+  const hoy = formatoFecha.format(new Date());
+
+  let pendientes = 0;
+  let entregadosHoy = 0;
+
+  snap.docs.forEach(documento => {
+    const pedido = documento.data();
+
+    if (pedido.estado === "pendiente") {
+      pendientes++;
+    }
+
+    if (
+      pedido.estado === "entregado" &&
+      typeof pedido.entregado_en?.toDate === "function"
+    ) {
+      const fechaEntrega = formatoFecha.format(
+        pedido.entregado_en.toDate()
+      );
+
+      if (fechaEntrega === hoy) {
+        entregadosHoy++;
+      }
+    }
+  });
+
+  return { pendientes, entregadosHoy };
+}
+
+async function cancelarPedidoRetiro(pedidoId, motivo) {
+  const usuario = auth.currentUser;
+  const motivoLimpio = motivo.trim();
+
+  if (!usuario) {
+    throw new Error("Debes iniciar sesión.");
+  }
+
+  if (!motivoLimpio || motivoLimpio.length > 300) {
+    throw new Error("Escribe un motivo de entre 1 y 300 caracteres.");
+  }
+
+  const pedidoRef = db.collection("pedidos").doc(pedidoId);
+
+  return db.runTransaction(async transaccion => {
+    const documento = await transaccion.get(pedidoRef);
+
+    if (!documento.exists) {
+      throw new Error("El pedido no existe.");
+    }
+
+    const pedido = documento.data();
+
+    // No devolver existencias nuevamente.
+    if (pedido.estado === "cancelado") {
+      return false;
+    }
+
+    if (
+      pedido.tipo !== "retiro" ||
+      !["pendiente", "confirmado"].includes(pedido.estado)
+    ) {
+      throw new Error(
+        "Solo puedes cancelar pedidos de retiro pendientes o confirmados."
+      );
+    }
+
+    const detalles = pedido.detalles;
+
+    if (
+      !Array.isArray(detalles) ||
+      detalles.length < 1 ||
+      detalles.length > 5 ||
+      !detalles.every(detalle =>
+        typeof detalle.producto_id === "string" &&
+        detalle.producto_id.length > 0 &&
+        !detalle.producto_id.includes("/") &&
+        Number.isSafeInteger(detalle.cantidad) &&
+        detalle.cantidad > 0 &&
+        detalle.cantidad <= 10000
+      ) ||
+      new Set(detalles.map(detalle => detalle.producto_id)).size
+        !== detalles.length
+    ) {
+      throw new Error("Los detalles del pedido no son válidos.");
+    }
+
+    const referencias = detalles.map(detalle =>
+      db.collection("productos").doc(detalle.producto_id)
+    );
+
+    const documentos = await Promise.all(
+      referencias.map(ref => transaccion.get(ref))
+    );
+
+    if (auth.currentUser?.uid !== usuario.uid) {
+      throw new Error("La sesión cambió. Recarga la página.");
+    }
+
+    // Validar todos los productos antes de escribir.
+    const saldos = documentos.map((productoDoc, indice) => {
+      if (!productoDoc.exists) {
+        throw new Error("No se puede devolver stock: falta un producto.");
+      }
+
+      const anterior = productoDoc.data().stock_actual;
+      const nuevo = anterior + detalles[indice].cantidad;
+
+      if (
+        typeof anterior !== "number" ||
+        !Number.isFinite(anterior) ||
+        anterior < 0 ||
+        !Number.isFinite(nuevo) ||
+        nuevo <= anterior
+      ) {
+        throw new Error("Un producto tiene existencias inválidas.");
+      }
+
+      return { anterior, nuevo };
+    });
+
+    const fecha = firebase.firestore.FieldValue.serverTimestamp();
+
+    transaccion.update(pedidoRef, {
+      estado: "cancelado",
+      cancelado_en: fecha,
+      updated_at: fecha,
+      historial: [
+        ...(pedido.historial ?? []),
+        {
+          estado_nuevo: "cancelado",
+          fecha: new Date().toISOString(),
+          usuario_id: usuario.uid,
+          nota: motivoLimpio
+        }
+      ]
+    });
+
+    detalles.forEach((detalle, indice) => {
+      transaccion.update(referencias[indice], {
+        stock_actual: saldos[indice].nuevo,
+        updated_at: fecha
+      });
+
+      const movimientoRef = db.collection("movimientos_stock")
+        .doc(`cancelacion_${pedidoId}_${detalle.producto_id}`);
+
+      transaccion.set(movimientoRef, {
+        pedido_id: pedidoId,
+        producto_id: detalle.producto_id,
+        usuario_id: usuario.uid,
+        tipo: "entrada",
+        cantidad: detalle.cantidad,
+        motivo: `Cancelación: ${motivoLimpio}`,
+        stock_anterior: saldos[indice].anterior,
+        stock_nuevo: saldos[indice].nuevo,
+        created_at: fecha
+      });
+    });
+
+    return true;
+  });
+}

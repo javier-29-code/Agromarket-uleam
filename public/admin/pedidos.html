@@ -97,6 +97,16 @@
                 `<option value="${e}">${ETIQUETAS_ESTADO[e]}</option>`
               ).join("")}
             </select>
+
+            ${["pendiente", "confirmado"].includes(p.estado)
+              ? `<button
+                   type="button"
+                   class="btn btn-outline-danger btn-sm mt-2"
+                   onclick="cancelarPedidoDesdeAdmin('${p.id}', this)">
+                   Cancelar pedido
+                 </button>`
+              : ""
+                }
           </td>
         </tr>`).join("")}
       </tbody>
@@ -139,6 +149,53 @@ async function cambiarEstadoPedido(id, estadoActual, nuevoEstado) {
     document.querySelectorAll("select").forEach(select => {
       select.disabled = false;
     });
+  }
+}
+
+async function cancelarPedidoDesdeAdmin(pedidoId, boton) {
+  if (cambiandoEstado) return;
+
+  const motivo = window.prompt(
+    "Motivo de cancelación (máximo 288 caracteres):"
+  );
+
+  if (motivo === null) return;
+
+  // Dejar espacio para el prefijo "Cancelación: " del movimiento.
+  if (!motivo.trim() || motivo.trim().length > 288) {
+    mostrarToast("Escribe un motivo de entre 1 y 288 caracteres.", "warning");
+    return;
+  }
+
+  cambiandoEstado = true;
+  boton.disabled = true;
+  let operacionCompletada = false;
+
+  try {
+    const cancelado = await cancelarPedidoRetiro(pedidoId, motivo);
+    operacionCompletada = true;
+
+    mostrarToast(
+      cancelado
+        ? "Pedido cancelado y stock devuelto."
+        : "El pedido ya estaba cancelado."
+    );
+
+    await cargarPedidos();
+  } catch (error) {
+    console.error("Error al cancelar el pedido:", error);
+
+    mostrarToast(
+      operacionCompletada
+        ? "La operación terminó. Recarga para actualizar la lista."
+        : error.code
+          ? "No se pudo cancelar. Revisa tu conexión y permisos."
+          : error.message,
+      operacionCompletada ? "warning" : "danger"
+    );
+  } finally {
+    cambiandoEstado = false;
+    boton.disabled = false;
   }
 }
 </script>
