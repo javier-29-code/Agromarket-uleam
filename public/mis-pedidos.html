@@ -42,6 +42,8 @@
     const user = auth.currentUser;
     const pedidos = await listarPedidosCliente(user.uid);
     const el = document.getElementById("lista-pedidos");
+    async function iniciarPagina() {
+
 
     if (!pedidos.length) {
       el.innerHTML = `<div class="text-center py-5">

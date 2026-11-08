@@ -15,12 +15,12 @@
 // ── PATRÓN STATE — transiciones válidas ──────────────
 // Solo se puede cambiar al estado si está en la lista.
 const TRANSICIONES_VALIDAS = {
-  pendiente:      ["confirmado", "cancelado"],
-  confirmado:     ["en_preparacion", "cancelado"],
-  en_preparacion: ["en_camino"],
-  en_camino:      ["entregado"],
-  entregado:      [],   // estado final
-  cancelado:      []    // estado final
+  pendiente: ["confirmado"],
+  confirmado: ["en_preparacion"],
+  en_preparacion: ["listo_para_retirar"],
+  listo_para_retirar: ["entregado"],
+  entregado: [],
+  cancelado: []
 };
 
 function puedeTransicionar(estadoActual, nuevoEstado) {
@@ -34,7 +34,8 @@ const ETIQUETAS_ESTADO = {
   en_preparacion: "En Preparación",
   en_camino:      "En Camino",
   entregado:      "Entregado",
-  cancelado:      "Cancelado"
+  cancelado:      "Cancelado",
+  listo_para_retirar: "Listo para retirar"
 };
 
 
@@ -89,24 +90,81 @@ async function crearPedido(datos) {
 async function listarPedidosCliente(clienteId) {
   const snap = await db.collection("pedidos")
     .where("cliente_id", "==", clienteId)
-    .orderBy("created_at", "desc").get();
-  return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    .get();
+
+  return snap.docs
+    .map(doc => ({ ...doc.data(), id: doc.id }))
+    .sort((a, b) =>
+      (b.created_at?.toMillis() ?? 0) -
+      (a.created_at?.toMillis() ?? 0)
+    );
 }
 
-async function cambiarEstado(pedidoId, pedido, nuevoEstado, nota = "") {
-  // MOO: PATRÓN STATE — valida antes de cambiar
-  if (!puedeTransicionar(pedido.estado, nuevoEstado)) {
-    throw new Error(
-      `No se puede cambiar de "${pedido.estado}" a "${nuevoEstado}"`
-    );
+async function cambiarEstado(
+  pedidoId,
+  pedido,
+  nuevoEstado,
+  nota = ""
+) {
+  const usuario = auth.currentUser;
+
+  if (!usuario) {
+    throw new Error("Debes iniciar sesión.");
   }
-  const nuevoHistorial = [
-    ...(pedido.historial || []),
-    { estado_nuevo: nuevoEstado, fecha: new Date().toISOString(), nota }
-  ];
-  await db.collection("pedidos").doc(pedidoId).update({
-    estado: nuevoEstado,
-    historial: nuevoHistorial
+
+  const notaLimpia = nota.trim();
+
+  if (notaLimpia.length > 300) {
+    throw new Error("La nota admite hasta 300 caracteres.");
+  }
+
+  const ref = db.collection("pedidos").doc(pedidoId);
+
+  await db.runTransaction(async transaccion => {
+    const documento = await transaccion.get(ref);
+
+    if (!documento.exists) {
+      throw new Error("El pedido no existe.");
+    }
+
+    const actual = documento.data();
+
+    if (auth.currentUser?.uid !== usuario.uid) {
+      throw new Error("La sesión cambió. Recarga la página.");
+    }
+
+    if (actual.tipo !== "retiro") {
+      throw new Error("Esta operación corresponde a pedidos de retiro.");
+    }
+
+    if (actual.estado !== pedido.estado) {
+      throw new Error("Otro usuario modificó el pedido. Recarga la lista.");
+    }
+
+    if (!puedeTransicionar(actual.estado, nuevoEstado)) {
+      throw new Error("Ese cambio de estado no está permitido.");
+    }
+
+    const cambios = {
+      estado: nuevoEstado,
+      historial: [
+        ...(actual.historial ?? []),
+        {
+          estado_nuevo: nuevoEstado,
+          fecha: new Date().toISOString(),
+          usuario_id: usuario.uid,
+          nota: notaLimpia
+        }
+      ],
+      updated_at: firebase.firestore.FieldValue.serverTimestamp()
+    };
+
+    if (nuevoEstado === "entregado") {
+      cambios.entregado_en =
+        firebase.firestore.FieldValue.serverTimestamp();
+    }
+
+    transaccion.update(ref, cambios);
   });
 }
 
@@ -296,4 +354,192 @@ async function listarMovimientosProducto(productoId) {
       (b.created_at?.toMillis() ?? 0) -
       (a.created_at?.toMillis() ?? 0)
     );
+}
+
+async function crearPedidoRetiro(
+  carrito,
+  notas,
+  resumenEsperado,
+  pedidoId
+) {
+  const usuario = auth.currentUser;
+
+  if (!usuario) {
+    throw new Error("Debes iniciar sesión.");
+  }
+
+  if (
+    !Array.isArray(carrito) ||
+    carrito.length < 1 ||
+    carrito.length > 5
+  ) {
+    throw new Error("El pedido admite entre 1 y 5 productos distintos.");
+  }
+
+  const items = carrito.map(item => ({
+    productoId: item.productoId,
+    cantidad: item.cantidad
+  }));
+
+  if (
+    !items.every(item =>
+      typeof item.productoId === "string" &&
+      item.productoId.length > 0 &&
+      !item.productoId.includes("/") &&
+      Number.isSafeInteger(item.cantidad) &&
+      item.cantidad >= 1 &&
+      item.cantidad <= 10000
+    ) ||
+    new Set(items.map(item => item.productoId)).size !== items.length
+  ) {
+    throw new Error("El carrito contiene cantidades o productos inválidos.");
+  }
+
+  const notasLimpias = notas.trim();
+
+  if (notasLimpias.length > 300) {
+    throw new Error("Las observaciones admiten hasta 300 caracteres.");
+  }
+
+  const preciosEsperados = new Map(
+    resumenEsperado.detalles.map(detalle => [
+      detalle.producto_id,
+      Math.round(detalle.precio_unitario * 100)
+    ])
+  );
+
+  const pedidoRef = db.collection("pedidos").doc(pedidoId);
+  const perfilRef = db.collection("usuarios").doc(usuario.uid);
+  const productoRefs = items.map(item =>
+    db.collection("productos").doc(item.productoId)
+  );
+
+  return db.runTransaction(async transaccion => {
+    // Todas las lecturas se realizan antes de escribir.
+    const pedidoExistente = await transaccion.get(pedidoRef);
+
+    if (pedidoExistente.exists) {
+      if (pedidoExistente.data().cliente_id !== usuario.uid) {
+        throw new Error("No puedes utilizar este identificador de pedido.");
+      }
+
+      return pedidoRef.id;
+    }
+
+    const perfilDoc = await transaccion.get(perfilRef);
+
+    const documentos = await Promise.all(
+      productoRefs.map(ref => transaccion.get(ref))
+    );
+
+    if (auth.currentUser?.uid !== usuario.uid) {
+      throw new Error("La sesión cambió. Recarga la página.");
+    }
+
+    if (!perfilDoc.exists || perfilDoc.data().activo !== true) {
+      throw new Error("Tu perfil no está activo.");
+    }
+
+    const perfil = perfilDoc.data();
+    let totalCentavos = 0;
+
+    const detalles = items.map((item, indice) => {
+      const documento = documentos[indice];
+
+      if (!documento.exists || documento.data().activo !== true) {
+        throw new Error("Un producto ya no está disponible.");
+      }
+
+      const producto = documento.data();
+
+      if (
+        typeof producto.stock_actual !== "number" ||
+        !Number.isFinite(producto.stock_actual) ||
+        producto.stock_actual < item.cantidad
+      ) {
+        throw new Error(`Stock insuficiente para ${producto.nombre}.`);
+      }
+
+      if (
+        typeof producto.precio !== "number" ||
+        !Number.isFinite(producto.precio)
+      ) {
+        throw new Error(`Precio inválido para ${producto.nombre}.`);
+      }
+
+      const precioCentavos = Math.round(producto.precio * 100);
+
+      if (precioCentavos <= 0 || precioCentavos > 100000000) {
+        throw new Error(`Precio inválido para ${producto.nombre}.`);
+      }
+
+      if (precioCentavos !== preciosEsperados.get(item.productoId)) {
+        throw new Error(
+          `El precio de ${producto.nombre} cambió. Recarga y revisa el pedido.`
+        );
+      }
+
+      const subtotalCentavos = precioCentavos * item.cantidad;
+      totalCentavos += subtotalCentavos;
+
+      return {
+        producto_id: item.productoId,
+        nombre_producto: producto.nombre,
+        cantidad: item.cantidad,
+        unidad: producto.unidad,
+        precio_centavos: precioCentavos,
+        subtotal_centavos: subtotalCentavos,
+        precio_unitario: precioCentavos / 100,
+        subtotal: subtotalCentavos / 100
+      };
+    });
+
+    const fecha = firebase.firestore.FieldValue.serverTimestamp();
+
+    transaccion.set(pedidoRef, {
+      cliente_id: usuario.uid,
+      cliente_nombre: `${perfil.nombre} ${perfil.apellido}`.trim(),
+      tipo: "retiro",
+      forma_pago: "efectivo",
+      estado: "pendiente",
+      producto_ids: items.map(item => item.productoId),
+      detalles,
+      subtotal: totalCentavos / 100,
+      tarifa_envio: 0,
+      total: totalCentavos / 100,
+      total_centavos: totalCentavos,
+      notas: notasLimpias,
+      historial: [],
+      created_at: fecha
+    });
+
+    items.forEach((item, indice) => {
+      const stockAnterior = documentos[indice].data().stock_actual;
+      const stockNuevo = stockAnterior - item.cantidad;
+
+      transaccion.update(productoRefs[indice], {
+        stock_actual: stockNuevo,
+        updated_at: fecha,
+        pedido_stock_id: pedidoRef.id,
+        indice_stock: indice
+      });
+
+      const movimientoRef = db.collection("movimientos_stock")
+        .doc(`${pedidoRef.id}_${item.productoId}`);
+
+      transaccion.set(movimientoRef, {
+        pedido_id: pedidoRef.id,
+        producto_id: item.productoId,
+        usuario_id: usuario.uid,
+        tipo: "salida",
+        cantidad: item.cantidad,
+        motivo: "Compra",
+        stock_anterior: stockAnterior,
+        stock_nuevo: stockNuevo,
+        created_at: fecha
+      });
+    });
+
+    return pedidoRef.id;
+  });
 }

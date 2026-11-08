@@ -90,7 +90,11 @@
 
   <script>
     let resumenPedido = null;
+    let confirmandoPedido = false;
+    let intentoCompra = null;
 
+    // Conservar el mismo identificador durante los reintentos de esta página.
+    const pedidoConfirmacionId = db.collection("pedidos").doc().id;
     async function iniciarPagina() {
       try {
         resumenPedido = await prepararResumenPedido();
@@ -116,6 +120,8 @@
 
         document.getElementById("checkout-resumen")
           .classList.remove("d-none");
+
+        document.getElementById("btn-confirmar-pedido").disabled = false;
       } catch (error) {
         console.error("Error al preparar el pedido:", error);
 
@@ -130,6 +136,107 @@
           .classList.add("d-none");
       }
     }
+
+    document.getElementById("btn-confirmar-pedido")
+  .addEventListener("click", confirmarPedido);
+
+  async function confirmarPedido() {
+    if (confirmandoPedido || !resumenPedido) return;
+
+    const boton = document.getElementById("btn-confirmar-pedido");
+    const notas = document.getElementById("pedido-notas");
+    const aviso = document.getElementById("checkout-error");
+
+    confirmandoPedido = true;
+    boton.disabled = true;
+    aviso.classList.add("d-none");
+
+    let pedidoCreado = false;
+
+    try {
+      // Fijar los datos del intento para no cambiarlos al reintentar.
+      if (!intentoCompra) {
+        intentoCompra = {
+          carrito: resumenPedido.detalles.map(detalle => ({
+            productoId: detalle.producto_id,
+            cantidad: detalle.cantidad
+          })),
+          notas: notas.value,
+          clave: claveCarritoActual(),
+          contenidoOriginal: JSON.stringify(obtenerCarrito())
+        };
+      }
+
+      if (claveCarritoActual() !== intentoCompra.clave) {
+        throw new Error("La sesión cambió. Recarga la página.");
+      }
+
+      notas.disabled = true;
+
+      const pedidoId = await crearPedidoRetiro(
+        intentoCompra.carrito,
+        intentoCompra.notas,
+        resumenPedido,
+        pedidoConfirmacionId
+      );
+
+      pedidoCreado = true;
+
+      // Conservar el carrito si otra pestaña lo modificó entretanto.
+      let avisoCarrito = "";
+
+      try {
+        const contenidoActual = localStorage.getItem(intentoCompra.clave);
+
+        if (
+          contenidoActual === intentoCompra.contenidoOriginal ||
+          contenidoActual === null
+        ) {
+          localStorage.removeItem(intentoCompra.clave);
+        } else {
+          avisoCarrito =
+            " El carrito cambió en otra pestaña y se conservó; revísalo.";
+        }
+      } catch (error) {
+        console.error("No se pudo limpiar el carrito:", error);
+        avisoCarrito = " Revisa el carrito antes de realizar otra compra.";
+      }
+
+      document.getElementById("checkout-resumen").classList.add("d-none");
+
+      const mensaje = document.createElement("div");
+      mensaje.className = "alert alert-success";
+      mensaje.setAttribute("role", "status");
+      mensaje.textContent =
+        `Pedido registrado: ${pedidoId}. Estado: pendiente.` + avisoCarrito;
+
+      document.querySelector("main").appendChild(mensaje);
+
+    document.querySelector("main").appendChild(mensaje);  
+
+      const enlacePedidos = document.createElement("a");
+enlacePedidos.href = "mis-pedidos.html";
+enlacePedidos.className = "btn btn-success";
+enlacePedidos.textContent = "Ver mis pedidos";
+
+document.querySelector("main").appendChild(enlacePedidos);
+
+    } catch (error) {
+      console.error("Error al confirmar el pedido:", error);
+
+      aviso.textContent = error.code
+        ? "No se pudo confirmar. Conserva esta página para reintentar y revisa la consola."
+        : error.message;
+
+      aviso.classList.remove("d-none");
+    } finally {
+      confirmandoPedido = false;
+
+      if (!pedidoCreado) {
+        boton.disabled = false;
+      }
+    }
+  }
 
     protegerPagina(["cliente", "administrador"]);
   </script>

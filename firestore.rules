@@ -21,6 +21,186 @@ service cloud.firestore {
         ).data.rol == "administrador";
     }
 
+    // Comprobar una línea del pedido contra el producto actualizado.
+    function detalleCompraValido(pedidoId, pedido, indice) {
+      let detalle = pedido.detalles[indice];
+      let producto = getAfter(
+        /databases/$(database)/documents/productos/$(detalle.producto_id)
+      ).data;
+
+      return detalle.keys().hasAll([
+          "producto_id", "nombre_producto", "cantidad", "unidad",
+          "precio_centavos", "subtotal_centavos",
+          "precio_unitario", "subtotal"
+        ])
+        && detalle.keys().hasOnly([
+          "producto_id", "nombre_producto", "cantidad", "unidad",
+          "precio_centavos", "subtotal_centavos",
+          "precio_unitario", "subtotal"
+        ])
+        && detalle.producto_id == pedido.producto_ids[indice]
+        && detalle.cantidad is int
+        && detalle.cantidad > 0
+        && detalle.cantidad <= 10000
+        && detalle.precio_centavos is int
+        && detalle.precio_centavos > 0
+        && detalle.precio_centavos <= 100000000
+        && detalle.precio_centavos
+          == int(math.round(producto.precio * 100))
+        && detalle.precio_unitario == detalle.precio_centavos / 100.0
+        && detalle.subtotal_centavos
+          == detalle.precio_centavos * detalle.cantidad
+        && detalle.subtotal == detalle.subtotal_centavos / 100.0
+        && detalle.nombre_producto == producto.nombre
+        && detalle.unidad == producto.unidad
+        && producto.activo == true
+        && producto.stock_actual >= 0
+        && producto.pedido_stock_id == pedidoId
+        && producto.indice_stock == indice
+        && producto.updated_at == request.time;
+    }
+
+    function subtotalLinea(pedido, indice) {
+      return pedido.detalles.size() > indice
+        ? pedido.detalles[indice].subtotal_centavos
+        : 0;
+    }
+
+    function pedidoCompraValido(pedidoId) {
+      let pedido = request.resource.data;
+
+      return usuarioActivo()
+        && pedido.keys().hasAll([
+          "cliente_id", "cliente_nombre", "tipo", "forma_pago",
+          "estado", "producto_ids", "detalles", "subtotal",
+          "tarifa_envio", "total", "total_centavos",
+          "notas", "historial", "created_at"
+        ])
+        && pedido.keys().hasOnly([
+          "cliente_id", "cliente_nombre", "tipo", "forma_pago",
+          "estado", "producto_ids", "detalles", "subtotal",
+          "tarifa_envio", "total", "total_centavos",
+          "notas", "historial", "created_at"
+        ])
+        && pedido.cliente_id == request.auth.uid
+        && pedido.cliente_nombre is string
+        && pedido.cliente_nombre.size() > 0
+        && pedido.cliente_nombre.size() <= 201
+        && pedido.tipo == "retiro"
+        && pedido.forma_pago == "efectivo"
+        && pedido.estado == "pendiente"
+        && pedido.created_at == request.time
+        && pedido.notas is string
+        && pedido.notas.size() <= 300
+        && pedido.historial is list
+        && pedido.historial.size() == 0
+        && pedido.detalles is list
+        && pedido.detalles.size() >= 1
+        && pedido.detalles.size() <= 5
+        && pedido.producto_ids is list
+        && pedido.producto_ids.size() == pedido.detalles.size()
+        && pedido.producto_ids.toSet().size()
+          == pedido.producto_ids.size()
+        && detalleCompraValido(pedidoId, pedido, 0)
+        && (pedido.detalles.size() < 2
+          || detalleCompraValido(pedidoId, pedido, 1))
+        && (pedido.detalles.size() < 3
+          || detalleCompraValido(pedidoId, pedido, 2))
+        && (pedido.detalles.size() < 4
+          || detalleCompraValido(pedidoId, pedido, 3))
+        && (pedido.detalles.size() < 5
+          || detalleCompraValido(pedidoId, pedido, 4))
+        && pedido.total_centavos is int
+        && pedido.total_centavos == (
+          subtotalLinea(pedido, 0)
+          + subtotalLinea(pedido, 1)
+          + subtotalLinea(pedido, 2)
+          + subtotalLinea(pedido, 3)
+          + subtotalLinea(pedido, 4)
+        )
+        && pedido.tarifa_envio == 0
+        && pedido.subtotal == pedido.total_centavos / 100.0
+        && pedido.total == pedido.subtotal;
+    }
+
+    // Autorizar únicamente el descuento asociado a un pedido nuevo.
+    function descuentoCompraValido(productoId) {
+      let nuevo = request.resource.data;
+      let pedidoId = nuevo.pedido_stock_id;
+      let pedido = getAfter(
+        /databases/$(database)/documents/pedidos/$(pedidoId)
+      ).data;
+      let detalle = pedido.detalles[nuevo.indice_stock];
+      let movimientoId = pedidoId + "_" + productoId;
+      let movimiento = getAfter(
+        /databases/$(database)/documents/movimientos_stock/$(movimientoId)
+      ).data;
+
+      return usuarioActivo()
+        && !exists(
+          /databases/$(database)/documents/pedidos/$(pedidoId)
+        )
+        && pedido.cliente_id == request.auth.uid
+        && nuevo.indice_stock is int
+        && nuevo.indice_stock >= 0
+        && nuevo.indice_stock < pedido.detalles.size()
+        && detalle.producto_id == productoId
+        && detalle.cantidad is int
+        && detalle.cantidad > 0
+        && resource.data.stock_actual is number
+        && nuevo.stock_actual
+          == resource.data.stock_actual - detalle.cantidad
+        && nuevo.stock_actual >= 0
+        && nuevo.updated_at == request.time
+        && nuevo.diff(resource.data).affectedKeys().hasOnly([
+          "stock_actual", "updated_at",
+          "pedido_stock_id", "indice_stock"
+        ])
+        && movimiento.pedido_id == pedidoId
+        && movimiento.producto_id == productoId
+        && movimiento.usuario_id == request.auth.uid
+        && movimiento.tipo == "salida"
+        && movimiento.cantidad == detalle.cantidad
+        && movimiento.stock_anterior == resource.data.stock_actual
+        && movimiento.stock_nuevo == nuevo.stock_actual
+        && movimiento.created_at == request.time;
+    }
+
+    function movimientoCompraValido(movimientoId) {
+      let movimiento = request.resource.data;
+      let pedidoId = movimiento.pedido_id;
+      let productoId = movimiento.producto_id;
+      let producto = getAfter(
+        /databases/$(database)/documents/productos/$(productoId)
+      ).data;
+      let pedido = getAfter(
+        /databases/$(database)/documents/pedidos/$(pedidoId)
+      ).data;
+      let detalle = pedido.detalles[producto.indice_stock];
+
+      return usuarioActivo()
+        && movimiento.keys().hasOnly([
+          "pedido_id", "producto_id", "usuario_id", "tipo",
+          "cantidad", "motivo", "stock_anterior",
+          "stock_nuevo", "created_at"
+        ])
+        && !exists(
+          /databases/$(database)/documents/pedidos/$(pedidoId)
+        )
+        && movimientoId == pedidoId + "_" + productoId
+        && pedido.cliente_id == request.auth.uid
+        && producto.pedido_stock_id == pedidoId
+        && detalle.producto_id == productoId
+        && movimiento.usuario_id == request.auth.uid
+        && movimiento.tipo == "salida"
+        && movimiento.cantidad == detalle.cantidad
+        && movimiento.stock_nuevo == producto.stock_actual
+        && movimiento.stock_anterior
+          == producto.stock_actual + detalle.cantidad
+        && movimiento.motivo == "Compra"
+        && movimiento.created_at == request.time;
+    }
+
     match /usuarios/{uid} {
       // Cada usuario puede consultar su perfil.
       allow get: if autenticado() && request.auth.uid == uid;
@@ -53,15 +233,86 @@ service cloud.firestore {
       // La edición de perfiles se implementará después.
       allow update, delete, list: if false;
     }
+          function avanceRetiroValido() {
+      let anterior = resource.data;
+      let nuevo = request.resource.data;
+      let siguientes = {
+        "pendiente": "confirmado",
+        "confirmado": "en_preparacion",
+        "en_preparacion": "listo_para_retirar",
+        "listo_para_retirar": "entregado"
+      };
+      let ultimo = nuevo.historial[anterior.historial.size()];
+
+      return esAdministrador()
+        && anterior.tipo == "retiro"
+        && anterior.estado in [
+          "pendiente", "confirmado",
+          "en_preparacion", "listo_para_retirar"
+        ]
+        && nuevo.estado == siguientes[anterior.estado]
+        && nuevo.diff(anterior).affectedKeys().hasOnly([
+          "estado", "historial", "updated_at", "entregado_en"
+        ])
+        && nuevo.updated_at == request.time
+        && nuevo.historial.size() == anterior.historial.size() + 1
+        && nuevo.historial == anterior.historial.concat([ultimo])
+        && ultimo.keys().hasAll([
+          "estado_nuevo", "fecha", "usuario_id", "nota"
+        ])
+        && ultimo.keys().hasOnly([
+          "estado_nuevo", "fecha", "usuario_id", "nota"
+        ])
+        && ultimo.estado_nuevo == nuevo.estado
+        && ultimo.usuario_id == request.auth.uid
+        && ultimo.fecha is string
+        && ultimo.nota is string
+        && ultimo.nota.size() <= 300
+        && (
+          nuevo.estado == "entregado"
+            ? nuevo.entregado_en == request.time
+            : !nuevo.diff(anterior).affectedKeys()
+                .hasAny(["entregado_en"])
+        );
+    }
+    
 
     match /productos/{productoId} {
       allow read: if usuarioActivo();
-      allow create, update, delete: if esAdministrador();
+
+      allow create, delete: if esAdministrador();
+
+      allow update: if esAdministrador()
+        || descuentoCompraValido(productoId);
+    }
+
+    match /pedidos/{pedidoId} {
+      allow create: if pedidoCompraValido(pedidoId);
+
+      allow get: if usuarioActivo()
+        && (
+          !exists(
+            /databases/$(database)/documents/pedidos/$(pedidoId)
+          )
+          || resource.data.cliente_id == request.auth.uid
+          || esAdministrador()
+        );
+
+      allow list: if usuarioActivo()
+        && (
+          resource.data.cliente_id == request.auth.uid
+          || esAdministrador()
+        );
+
+      // Los cambios de estado se implementarán después.
+      allow update: if avanceRetiroValido();
+      allow delete: if false;
     }
 
     match /movimientos_stock/{movimientoId} {
       allow read: if esAdministrador();
 
+      // Movimientos manuales del administrador.
       allow create: if esAdministrador()
         && request.resource.data.usuario_id == request.auth.uid
         && request.resource.data.tipo in ["entrada", "salida"]
@@ -75,6 +326,11 @@ service cloud.firestore {
         && request.resource.data.stock_nuevo is number
         && request.resource.data.stock_nuevo >= 0
         && request.resource.data.created_at == request.time;
+
+      // Salida asociada a la compra de un cliente.
+      allow create: if movimientoCompraValido(movimientoId);
+
+      allow update, delete: if false;
     }
 
     // Las demás colecciones permanecen bloqueadas.

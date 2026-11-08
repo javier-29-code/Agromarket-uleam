@@ -33,7 +33,7 @@
       <option value="pendiente">Pendiente</option>
       <option value="confirmado">Confirmado</option>
       <option value="en_preparacion">En Preparación</option>
-      <option value="en_camino">En Camino</option>
+      <option value="listo_para_retirar">Listo para retirar</option>
       <option value="entregado">Entregado</option>
       <option value="cancelado">Cancelado</option>
     </select>
@@ -54,7 +54,8 @@
 
   const colorEstado = {
     pendiente:"warning", confirmado:"info", en_preparacion:"primary",
-    en_camino:"secondary", entregado:"success", cancelado:"danger"
+    en_camino:"secondary", entregado:"success", cancelado:"danger",
+    listo_para_retirar: "info",
   };
 
   async function iniciarPagina() {
@@ -102,5 +103,43 @@
     </table>`;
   }
 
+
+let cambiandoEstado = false;
+
+async function cambiarEstadoPedido(id, estadoActual, nuevoEstado) {
+  if (!nuevoEstado || cambiandoEstado) return;
+
+  cambiandoEstado = true;
+  let guardado = false;
+
+  document.querySelectorAll("select").forEach(select => {
+    select.disabled = true;
+  });
+
+  try {
+    await cambiarEstado(id, { estado: estadoActual }, nuevoEstado);
+    guardado = true;
+
+    mostrarToast("Estado actualizado.");
+    await cargarPedidos();
+  } catch (error) {
+    console.error("Error al gestionar el pedido:", error);
+
+    mostrarToast(
+      guardado
+        ? "El estado se guardó. Recarga para actualizar la lista."
+        : error.code
+          ? "No se pudo actualizar. Revisa tu conexión y permisos."
+          : error.message,
+      guardado ? "warning" : "danger"
+    );
+  } finally {
+    cambiandoEstado = false;
+
+    document.querySelectorAll("select").forEach(select => {
+      select.disabled = false;
+    });
+  }
+}
 </script>
 </body></html>
