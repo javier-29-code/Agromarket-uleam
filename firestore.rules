@@ -14,6 +14,11 @@ service cloud.firestore {
         ).data.activo == true;
     }
 
+    function esRepartidor() {
+      return usuarioActivo()
+        && get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol == "repartidor";
+    }
+
     function esAdministrador() {
       return usuarioActivo()
         && get(
@@ -24,35 +29,33 @@ service cloud.firestore {
     // Comprobar una línea del pedido contra el producto actualizado.
     function detalleCompraValido(pedidoId, pedido, indice) {
       let detalle = pedido.detalles[indice];
+
       let producto = getAfter(
         /databases/$(database)/documents/productos/$(detalle.producto_id)
       ).data;
 
-      return detalle.keys().hasAll([
-          "producto_id", "nombre_producto", "cantidad", "unidad",
-          "precio_centavos", "subtotal_centavos",
-          "precio_unitario", "subtotal"
-        ])
-        && detalle.keys().hasOnly([
-          "producto_id", "nombre_producto", "cantidad", "unidad",
-          "precio_centavos", "subtotal_centavos",
-          "precio_unitario", "subtotal"
-        ])
-        && detalle.producto_id == pedido.producto_ids[indice]
-        && detalle.cantidad is int
-        && detalle.cantidad > 0
-        && detalle.cantidad <= 10000
-        && detalle.precio_centavos is int
-        && detalle.precio_centavos > 0
-        && detalle.precio_centavos <= 100000000
-        && detalle.precio_centavos
-          == int(math.round(producto.precio * 100))
-        && detalle.precio_unitario == detalle.precio_centavos / 100.0
-        && detalle.subtotal_centavos
-          == detalle.precio_centavos * detalle.cantidad
-        && detalle.subtotal == detalle.subtotal_centavos / 100.0
-        && detalle.nombre_producto == producto.nombre
-        && detalle.unidad == producto.unidad
+      let cantidad = detalle.cantidad;
+      let precioCentavos = int(math.round(producto.precio * 100));
+
+      return cantidad is int
+        && cantidad > 0
+        && cantidad <= 10000
+        && precioCentavos > 0
+        && precioCentavos <= 100000000
+        && detalle == {
+          "producto_id": pedido.producto_ids[indice],
+          "nombre_producto": producto.nombre,
+          "cantidad": cantidad,
+          "unidad": producto.unidad,
+          "precio_centavos": precioCentavos,
+          "subtotal_centavos": precioCentavos * cantidad,
+          "precio_unitario": detalle.precio_unitario,
+          "subtotal": detalle.subtotal
+        }
+        && detalle.precio_unitario is number
+        && detalle.subtotal is number
+        && detalle.precio_unitario == precioCentavos / 100.0
+        && detalle.subtotal == (precioCentavos * cantidad) / 100.0
         && producto.activo == true
         && producto.stock_actual >= 0
         && producto.pedido_stock_id == pedidoId
@@ -64,6 +67,41 @@ service cloud.firestore {
       return pedido.detalles.size() > indice
         ? pedido.detalles[indice].subtotal_centavos
         : 0;
+    }
+
+    function datosDeliveryValidos(pedido) {
+      let zona = get(
+        /databases/$(database)/documents/zonas_delivery/$(pedido.zona_id)
+      ).data;
+      return pedido.keys().hasAll([
+          "zona_id", "zona_nombre", "bloque", "piso", "aula", "direccion_entrega"
+        ])
+        && zona.activo == true
+        && zona.nombre is string
+        && zona.nombre.size() > 0 && zona.nombre.size() <= 100
+        && zona.tarifa is number && zona.tarifa >= 0 && zona.tarifa <= 100
+        && pedido.zona_nombre == zona.nombre
+        && pedido.bloque is string && pedido.bloque.size() > 0 && pedido.bloque.size() <= 80
+        && pedido.piso is string && pedido.piso.size() > 0 && pedido.piso.size() <= 40
+        && pedido.aula is string && pedido.aula.size() > 0 && pedido.aula.size() <= 80
+        && pedido.direccion_entrega == pedido.bloque + " — Piso " + pedido.piso + " — Aula " + pedido.aula
+        && pedido.tarifa_envio == int(math.round(zona.tarifa * 100)) / 100.0;
+    }
+
+    function entregaCompraValida(pedido) {
+      return (
+          pedido.tipo == "retiro"
+          && pedido.tarifa_envio == 0
+          && !pedido.keys().hasAny([
+            "zona_id", "zona_nombre", "bloque", "piso", "aula", "direccion_entrega"
+          ])
+        ) || (
+          pedido.tipo == "delivery"
+          && pedido.zona_id is string
+          && pedido.zona_id.size() > 0 && pedido.zona_id.size() <= 100
+          && pedido.zona_id.matches("^[^/]+$")
+          && datosDeliveryValidos(pedido)
+        );
     }
 
     function pedidoCompraValido(pedidoId) {
@@ -80,13 +118,14 @@ service cloud.firestore {
           "cliente_id", "cliente_nombre", "tipo", "forma_pago",
           "estado", "producto_ids", "detalles", "subtotal",
           "tarifa_envio", "total", "total_centavos",
-          "notas", "historial", "created_at"
+          "notas", "historial", "created_at",
+          "zona_id", "zona_nombre", "bloque", "piso", "aula", "direccion_entrega"
         ])
         && pedido.cliente_id == request.auth.uid
         && pedido.cliente_nombre is string
         && pedido.cliente_nombre.size() > 0
         && pedido.cliente_nombre.size() <= 201
-        && pedido.tipo == "retiro"
+        && entregaCompraValida(pedido)
         && pedido.forma_pago == "efectivo"
         && pedido.estado == "pendiente"
         && pedido.created_at == request.time
@@ -111,16 +150,17 @@ service cloud.firestore {
         && (pedido.detalles.size() < 5
           || detalleCompraValido(pedidoId, pedido, 4))
         && pedido.total_centavos is int
-        && pedido.total_centavos == (
+        && pedido.subtotal == (
           subtotalLinea(pedido, 0)
           + subtotalLinea(pedido, 1)
           + subtotalLinea(pedido, 2)
           + subtotalLinea(pedido, 3)
           + subtotalLinea(pedido, 4)
-        )
-        && pedido.tarifa_envio == 0
-        && pedido.subtotal == pedido.total_centavos / 100.0
-        && pedido.total == pedido.subtotal;
+        ) / 100.0
+        && pedido.tarifa_envio is number
+        && pedido.total_centavos == int(math.round(pedido.subtotal * 100))
+          + int(math.round(pedido.tarifa_envio * 100))
+        && pedido.total == pedido.total_centavos / 100.0;
     }
 
     // Autorizar únicamente el descuento asociado a un pedido nuevo.
@@ -170,20 +210,18 @@ service cloud.firestore {
       let movimiento = request.resource.data;
       let pedidoId = movimiento.pedido_id;
       let productoId = movimiento.producto_id;
+
       let producto = getAfter(
         /databases/$(database)/documents/productos/$(productoId)
       ).data;
+
       let pedido = getAfter(
         /databases/$(database)/documents/pedidos/$(pedidoId)
       ).data;
+
       let detalle = pedido.detalles[producto.indice_stock];
 
       return usuarioActivo()
-        && movimiento.keys().hasOnly([
-          "pedido_id", "producto_id", "usuario_id", "tipo",
-          "cantidad", "motivo", "stock_anterior",
-          "stock_nuevo", "created_at"
-        ])
         && !exists(
           /databases/$(database)/documents/pedidos/$(pedidoId)
         )
@@ -191,23 +229,31 @@ service cloud.firestore {
         && pedido.cliente_id == request.auth.uid
         && producto.pedido_stock_id == pedidoId
         && detalle.producto_id == productoId
-        && movimiento.usuario_id == request.auth.uid
-        && movimiento.tipo == "salida"
-        && movimiento.cantidad == detalle.cantidad
-        && movimiento.stock_nuevo == producto.stock_actual
-        && movimiento.stock_anterior
-          == producto.stock_actual + detalle.cantidad
-        && movimiento.motivo == "Compra"
-        && movimiento.created_at == request.time;
+        && movimiento == {
+          "pedido_id": pedidoId,
+          "producto_id": productoId,
+          "usuario_id": request.auth.uid,
+          "tipo": "salida",
+          "cantidad": detalle.cantidad,
+          "motivo": "Compra",
+          "stock_anterior": producto.stock_actual + detalle.cantidad,
+          "stock_nuevo": producto.stock_actual,
+          "created_at": request.time
+        };
     }
 
     match /usuarios/{uid} {
       // Cada usuario puede consultar su perfil.
-      allow get: if autenticado() && request.auth.uid == uid;
+      allow get: if autenticado() && (request.auth.uid == uid || esAdministrador());
 
-      // Crear únicamente el perfil propio como cliente.
+      // Alta propia como cliente, o alta de roles por un administrador.
       allow create: if autenticado()
-        && request.auth.uid == uid
+        && (
+          (request.auth.uid == uid
+            && request.resource.data.rol == "cliente"
+            && request.resource.data.correo == request.auth.token.email)
+          || esAdministrador()
+        )
         && request.resource.data.keys().hasAll([
           "nombre", "apellido", "correo",
           "rol", "activo", "created_at"
@@ -222,16 +268,16 @@ service cloud.firestore {
         && request.resource.data.apellido is string
         && request.resource.data.apellido.size() > 0
         && request.resource.data.apellido.size() <= 100
-        && request.resource.data.correo == request.auth.token.email
+        && request.resource.data.correo is string
         && request.resource.data.correo.matches(
           "^[^@]+@uleam[.]edu[.]ec$"
         )
-        && request.resource.data.rol == "cliente"
+        && request.resource.data.rol in ["cliente", "repartidor", "administrador"]
         && request.resource.data.activo == true
         && request.resource.data.created_at == request.time;
 
-      // La edición de perfiles se implementará después.
-      allow update, delete, list: if false;
+      allow list: if esAdministrador();
+      allow update, delete: if false;
     }
           function avanceRetiroValido() {
       let anterior = resource.data;
@@ -276,13 +322,106 @@ service cloud.firestore {
         );
     }
 
-        function cancelacionRetiroValida() {
+      // El pedido cancelado debe tener un movimiento por cada producto.
+      function devolucionRegistrada(pedidoId, detalle) {
+        let movimientoId =
+          "cancelacion_" + pedidoId + "_" + detalle.producto_id;
+
+        let movimiento = getAfter(
+          /databases/$(database)/documents/movimientos_stock/$(movimientoId)
+        ).data;
+
+        return movimiento.pedido_id == pedidoId
+          && movimiento.producto_id == detalle.producto_id
+          && movimiento.usuario_id == request.auth.uid
+          && movimiento.tipo == "entrada"
+          && movimiento.cantidad == detalle.cantidad
+          && movimiento.created_at == request.time;
+      }
+
+      // Comprobar que el movimiento corresponde a una línea del pedido.
+      function coincideDetalleCancelacion(pedido, movimiento, indice) {
+        return pedido.detalles.size() > indice
+          && pedido.detalles[indice].producto_id
+            == movimiento.producto_id
+          && pedido.detalles[indice].cantidad
+            == movimiento.cantidad;
+      }
+
+      // Validar el movimiento y la devolución real del stock.
+      function movimientoCancelacionValido(movimientoId) {
+        let movimiento = request.resource.data;
+        let pedidoId = movimiento.pedido_id;
+        let productoId = movimiento.producto_id;
+
+        let pedidoAnterior = get(
+          /databases/$(database)/documents/pedidos/$(pedidoId)
+        ).data;
+
+        let pedidoNuevo = getAfter(
+          /databases/$(database)/documents/pedidos/$(pedidoId)
+        ).data;
+
+        let productoAnterior = get(
+          /databases/$(database)/documents/productos/$(productoId)
+        ).data;
+
+        let productoNuevo = getAfter(
+          /databases/$(database)/documents/productos/$(productoId)
+        ).data;
+
+        return esAdministrador()
+          && movimiento.keys().hasAll([
+            "pedido_id", "producto_id", "usuario_id", "tipo",
+            "cantidad", "motivo", "stock_anterior",
+            "stock_nuevo", "created_at"
+          ])
+          && movimiento.keys().hasOnly([
+            "pedido_id", "producto_id", "usuario_id", "tipo",
+            "cantidad", "motivo", "stock_anterior",
+            "stock_nuevo", "created_at"
+          ])
+          && movimientoId
+            == "cancelacion_" + pedidoId + "_" + productoId
+          && pedidoAnterior.tipo in ["retiro", "delivery"]
+          && pedidoAnterior.estado in ["pendiente", "confirmado"]
+          && pedidoNuevo.estado == "cancelado"
+          && pedidoNuevo.cancelado_en == request.time
+          && (
+            coincideDetalleCancelacion(pedidoAnterior, movimiento, 0)
+            || coincideDetalleCancelacion(pedidoAnterior, movimiento, 1)
+            || coincideDetalleCancelacion(pedidoAnterior, movimiento, 2)
+            || coincideDetalleCancelacion(pedidoAnterior, movimiento, 3)
+            || coincideDetalleCancelacion(pedidoAnterior, movimiento, 4)
+          )
+          && movimiento.usuario_id == request.auth.uid
+          && movimiento.tipo == "entrada"
+          && movimiento.cantidad is int
+          && movimiento.cantidad > 0
+          && movimiento.cantidad <= 10000
+          && movimiento.motivo is string
+          && movimiento.motivo.size() > 0
+          && movimiento.motivo.size() <= 300
+          && movimiento.created_at == request.time
+          && productoAnterior.stock_actual is number
+          && productoAnterior.stock_actual >= 0
+          && productoNuevo.stock_actual
+            == productoAnterior.stock_actual + movimiento.cantidad
+          && productoNuevo.updated_at == request.time
+          && productoNuevo.diff(productoAnterior).affectedKeys().hasOnly([
+            "stock_actual", "updated_at"
+          ])
+          && movimiento.stock_anterior == productoAnterior.stock_actual
+          && movimiento.stock_nuevo == productoNuevo.stock_actual;
+      }
+
+      function cancelacionPedidoValida(pedidoId) {
       let anterior = resource.data;
       let nuevo = request.resource.data;
       let ultimo = nuevo.historial[anterior.historial.size()];
 
       return esAdministrador()
-        && anterior.tipo == "retiro"
+        && anterior.tipo in ["retiro", "delivery"]
         && anterior.estado in ["pendiente", "confirmado"]
         && nuevo.estado == "cancelado"
         && nuevo.diff(anterior).affectedKeys().hasOnly([
@@ -303,9 +442,42 @@ service cloud.firestore {
         && ultimo.fecha is string
         && ultimo.nota is string
         && ultimo.nota.size() > 0
-        && ultimo.nota.size() <= 300;
+        && ultimo.nota.size() <= 300
+        && anterior.detalles.size() >= 1
+        && anterior.detalles.size() <= 5
+        && devolucionRegistrada(pedidoId, anterior.detalles[0])
+        && (
+          anterior.detalles.size() < 2
+          || devolucionRegistrada(pedidoId, anterior.detalles[1])
+        )
+        && (
+          anterior.detalles.size() < 3
+          || devolucionRegistrada(pedidoId, anterior.detalles[2])
+        )
+        && (
+          anterior.detalles.size() < 4
+          || devolucionRegistrada(pedidoId, anterior.detalles[3])
+        )
+        && (
+          anterior.detalles.size() < 5
+          || devolucionRegistrada(pedidoId, anterior.detalles[4])
+        );
     }
     
+
+    match /zonas_delivery/{zonaId} {
+      allow read: if usuarioActivo();
+      allow create, update: if esAdministrador()
+        && request.resource.data.keys().hasAll(["nombre", "tarifa", "activo"])
+        && request.resource.data.keys().hasOnly(["nombre", "tarifa", "activo"])
+        && request.resource.data.nombre is string
+        && request.resource.data.nombre.size() > 0
+        && request.resource.data.nombre.size() <= 100
+        && request.resource.data.tarifa is number
+        && request.resource.data.tarifa >= 0 && request.resource.data.tarifa <= 100
+        && request.resource.data.activo is bool;
+      allow delete: if false;
+    }
 
     match /productos/{productoId} {
       allow read: if usuarioActivo();
@@ -314,6 +486,53 @@ service cloud.firestore {
 
       allow update: if esAdministrador()
         || descuentoCompraValido(productoId);
+    }
+
+    function historialAvanceDeliveryValido() {
+      let anterior = resource.data;
+      let nuevo = request.resource.data;
+      let ultimo = nuevo.historial[anterior.historial.size()];
+      return nuevo.updated_at == request.time
+        && nuevo.historial.size() == anterior.historial.size() + 1
+        && nuevo.historial == anterior.historial.concat([ultimo])
+        && ultimo.keys().hasAll(["estado_nuevo", "fecha", "usuario_id", "nota"])
+        && ultimo.keys().hasOnly(["estado_nuevo", "fecha", "usuario_id", "nota"])
+        && ultimo.estado_nuevo == nuevo.estado
+        && ultimo.usuario_id == request.auth.uid
+        && ultimo.fecha is string
+        && ultimo.nota is string && ultimo.nota.size() <= 300;
+    }
+
+    function asignacionRepartidorValida() {
+      let nuevo = request.resource.data;
+      let repartidor = get(
+        /databases/$(database)/documents/usuarios/$(nuevo.repartidor_id)
+      ).data;
+      return repartidor.activo == true && repartidor.rol == "repartidor"
+        && nuevo.repartidor_nombre == repartidor.nombre + " " + repartidor.apellido;
+    }
+
+    function avanceDeliveryValido() {
+      let anterior = resource.data;
+      let nuevo = request.resource.data;
+      let claves = nuevo.diff(anterior).affectedKeys();
+      let siguientes = {"pendiente": "confirmado", "confirmado": "en_preparacion"};
+      return anterior.tipo == "delivery" && historialAvanceDeliveryValido()
+        && (
+          (esAdministrador() && anterior.estado in ["pendiente", "confirmado"]
+            && nuevo.estado == siguientes[anterior.estado]
+            && claves.hasOnly(["estado", "historial", "updated_at"]))
+          || (esAdministrador() && anterior.estado == "en_preparacion"
+            && nuevo.estado == "en_camino"
+            && claves.hasOnly(["estado", "historial", "updated_at", "repartidor_id", "repartidor_nombre"])
+            && nuevo.repartidor_id is string && nuevo.repartidor_id.size() > 0
+            && nuevo.repartidor_id.matches("^[^/]+$")
+            && asignacionRepartidorValida())
+          || (esRepartidor() && anterior.estado == "en_camino"
+            && anterior.repartidor_id == request.auth.uid && nuevo.estado == "entregado"
+            && claves.hasOnly(["estado", "historial", "updated_at", "entregado_en"])
+            && nuevo.entregado_en == request.time)
+        );
     }
 
     match /pedidos/{pedidoId} {
@@ -326,25 +545,41 @@ service cloud.firestore {
           )
           || resource.data.cliente_id == request.auth.uid
           || esAdministrador()
+          || (esRepartidor() && resource.data.tipo == "delivery"
+            && resource.data.repartidor_id == request.auth.uid)
         );
 
       allow list: if usuarioActivo()
         && (
           resource.data.cliente_id == request.auth.uid
           || esAdministrador()
+          || (esRepartidor() && resource.data.tipo == "delivery"
+            && resource.data.repartidor_id == request.auth.uid)
         );
 
-      // Los cambios de estado se implementarán después.
+      // Avances por tipo de pedido y cancelación con devolución de stock.
       allow update: if avanceRetiroValido()
-        || cancelacionRetiroValida();
+        || avanceDeliveryValido()
+        || cancelacionPedidoValida(pedidoId);
+
       allow delete: if false;
     }
 
     match /movimientos_stock/{movimientoId} {
       allow read: if esAdministrador();
 
-      // Movimientos manuales del administrador.
-      allow create: if esAdministrador()
+      // Movimientos manuales, sin vínculo con un pedido.
+      allow create: if
+        !request.resource.data.keys().hasAny(["pedido_id"])
+        && esAdministrador()
+        && request.resource.data.keys().hasAll([
+          "producto_id", "usuario_id", "tipo", "cantidad",
+          "motivo", "stock_anterior", "stock_nuevo", "created_at"
+        ])
+        && request.resource.data.keys().hasOnly([
+          "producto_id", "usuario_id", "tipo", "cantidad",
+          "motivo", "stock_anterior", "stock_nuevo", "created_at"
+        ])
         && request.resource.data.usuario_id == request.auth.uid
         && request.resource.data.tipo in ["entrada", "salida"]
         && request.resource.data.cantidad is number
@@ -358,8 +593,19 @@ service cloud.firestore {
         && request.resource.data.stock_nuevo >= 0
         && request.resource.data.created_at == request.time;
 
-      // Salida asociada a la compra de un cliente.
-      allow create: if movimientoCompraValido(movimientoId);
+      // Movimientos asociados a compras o cancelaciones.
+      allow create: if
+        request.resource.data.keys().hasAny(["pedido_id"])
+        && (
+          (
+            request.resource.data.tipo == "salida"
+            && movimientoCompraValido(movimientoId)
+          )
+          || (
+            request.resource.data.tipo == "entrada"
+            && movimientoCancelacionValido(movimientoId)
+          )
+        );
 
       allow update, delete: if false;
     }

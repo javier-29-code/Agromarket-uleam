@@ -13,3 +13,13 @@ node_modules/
 # Sistema operativo
 Thumbs.db
 .DS_Store
+
+# Datos locales de los emuladores
+datos-emulador/
+respaldo-emulador/
+firebase-export-*/
+
+# Registros locales de Firebase
+firebase-debug.log*
+firestore-debug.log*
+ui-debug.log*

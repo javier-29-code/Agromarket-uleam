@@ -39,12 +39,36 @@
   <script src="js/db.js"></script>
 <script>
   // Si ya hay sesión activa, redirigir según rol
-  auth.onAuthStateChanged(async (user) => {
+  auth.onAuthStateChanged(async user => {
     if (!user) return;
-    const datos = await obtenerUsuario(user.uid);
-    if (!datos) return;
-    if (datos.rol === "administrador") window.location.href = "admin/dashboard.html";
-    else window.location.href = "catalogo.html";
+
+    const aviso = document.getElementById("error-msg");
+
+    try {
+      const datos = await obtenerUsuario(user.uid);
+
+      if (auth.currentUser?.uid !== user.uid) return;
+
+      const usuario = crearModeloUsuario(datos);
+
+      if (!usuario) {
+        throw new Error("El perfil no existe o su rol no está reconocido.");
+      }
+
+      if (!usuario.activo) {
+        throw new Error("Tu cuenta está inactiva.");
+      }
+
+      window.location.replace(usuario.obtenerPaginaInicio());
+    } catch (error) {
+      console.error("Error al consultar el perfil:", error);
+
+      aviso.textContent = error.code
+        ? "No se pudo consultar tu perfil. Revisa la consola."
+        : error.message;
+
+      aviso.classList.remove("d-none");
+    }
   });
 
   async function iniciarSesion() {

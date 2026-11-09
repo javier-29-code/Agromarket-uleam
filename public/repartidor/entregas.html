@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="es"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Mis entregas — Agro Market ULEAM</title>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="../css/style.css" rel="stylesheet">
+</head><body>
+<nav class="navbar navbar-dark bg-success"><div class="container">
+  <span class="navbar-brand">Agro Market — Repartidor</span><div class="d-flex align-items-center gap-3"><span id="usuario-nombre" class="text-white"></span><button class="btn btn-sm btn-outline-light" onclick="cerrarSesion()">Salir</button></div>
+</div></nav>
+<main class="container py-4">
+  <div class="d-flex justify-content-between mb-3"><h1 class="h4 text-success">Mis entregas</h1><button id="actualizar" class="btn btn-outline-success btn-sm">Actualizar</button></div>
+  <div id="error-entregas" class="alert alert-danger d-none" role="alert"></div>
+  <div id="lista-entregas" aria-live="polite">Cargando entregas...</div>
+</main>
+<script src="../js/firebase-config.js"></script><script src="../js/auth.js"></script><script src="../js/db.js"></script>
+<script>
+  let ocupado = false;
+  function nodo(tag, clase = "", texto = "") { const el = document.createElement(tag); el.className = clase; el.textContent = texto; return el; }
+  async function iniciarPagina() { await cargarNavbar(); await cargarEntregas(); }
+  async function cargarEntregas() {
+    if (ocupado) return; ocupado = true; bloquear(true);
+    const aviso = document.getElementById("error-entregas"); aviso.classList.add("d-none");
+    try {
+      const pedidos = await listarEntregasAsignadas();
+      const contenedor = document.getElementById("lista-entregas"); contenedor.replaceChildren();
+      if (!pedidos.length) contenedor.append(nodo("p", "text-muted", "No tienes entregas asignadas."));
+      for (const pedido of pedidos) {
+        const tarjeta = nodo("article", "card card-body shadow-sm mb-3");
+        tarjeta.append(nodo("h2", "h6", `Pedido #${pedido.id}`), nodo("p", "fw-bold text-success", ETIQUETAS_ESTADO[pedido.estado] || pedido.estado),
+          nodo("p", "mb-1", `Cliente: ${pedido.cliente_nombre}`), nodo("p", "mb-1", `Zona: ${pedido.zona_nombre}`), nodo("p", "", pedido.direccion_entrega));
+        if (pedido.notas) tarjeta.append(nodo("p", "small", `Observaciones: ${pedido.notas}`));
+        const lista = nodo("ul");
+        for (const detalle of pedido.detalles || []) lista.append(nodo("li", "", `${detalle.nombre_producto}: ${detalle.cantidad} ${detalle.unidad}`));
+        tarjeta.append(lista, nodo("p", "fw-bold", `${pedido.estado === "entregado" ? "Total cobrado" : "Total a cobrar"} en efectivo: ${fmt(pedido.total)}`));
+        if (pedido.estado === "en_camino") {
+          const boton = nodo("button", "btn btn-success align-self-start", "Confirmar entrega"); boton.type = "button";
+          boton.addEventListener("click", () => entregar(pedido)); tarjeta.append(boton);
+        } else if (pedido.estado === "entregado") {
+          tarjeta.append(nodo("p", "text-muted small", `Entregado: ${pedido.entregado_en?.toDate?.()?.toLocaleString("es-EC") || "Registrado"}`));
+        }
+        contenedor.append(tarjeta);
+      }
+    } catch (error) { console.error(error); aviso.textContent = "No se pudieron consultar las entregas. Revisa la consola y pulsa Actualizar."; aviso.classList.remove("d-none"); }
+    finally { ocupado = false; bloquear(false); }
+  }
+  function bloquear(valor) { document.querySelectorAll("main button").forEach(el => { el.disabled = valor; }); }
+  async function entregar(pedido) {
+    if (ocupado || !window.confirm("¿Entregaste el pedido y cobraste el efectivo? Esta acción cierra el pedido.")) return;
+    ocupado = true; bloquear(true);
+    try { await cambiarEstado(pedido.id, pedido, "entregado"); mostrarToast("Entrega registrada."); }
+    catch (error) { console.error(error); mostrarToast(error.code ? "No se pudo guardar. Actualiza y revisa la consola." : error.message, "danger"); }
+    finally { ocupado = false; bloquear(false); await cargarEntregas(); }
+  }
+  document.getElementById("actualizar").addEventListener("click", cargarEntregas);
+  protegerPagina(["repartidor"]);
+</script>
+</body></html>
