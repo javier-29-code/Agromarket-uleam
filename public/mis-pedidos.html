@@ -7,229 +7,153 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <link rel="stylesheet" href="css/style.css">
 </head><body>
 <nav class="navbar navbar-expand-lg navbar-dark" style="background-color:#1B5E20">
   <div class="container">
     <a class="navbar-brand fw-bold" href="catalogo.html">🌱 Agro Market ULEAM</a>
-    <div class="navbar-nav ms-auto">
-      <a class="nav-link text-white" href="mis-pedidos.html">
-        <i class="bi bi-bag-check"></i> Mis Pedidos</a>
-      <span class="nav-link text-white">
-        <i class="bi bi-person-circle"></i> <span id="usuario-nombre"></span></span>
-      <a class="nav-link text-white" href="#" onclick="cerrarSesion()">
-        <i class="bi bi-box-arrow-right"></i> Salir</a>
+    <div class="navbar-nav ms-auto flex-row flex-wrap gap-3 align-items-center">
+      <a class="nav-link text-white" href="mis-pedidos.html">Mis pedidos</a>
+      <a class="nav-link text-white" href="catalogo.html">Catálogo</a>
+      <span id="usuario-nombre" class="text-white"></span>
+      <button class="btn btn-sm btn-outline-light" type="button" onclick="cerrarSesion()">Salir</button>
     </div>
   </div>
 </nav>
-<div class="container py-4">
-  <h4 class="fw-bold text-success mb-4">📦 Mis Pedidos</h4>
-  <div id="lista-pedidos">
-    <div class="text-center py-5">
-      <div class="spinner-border text-success"></div>
-    </div>
+<main class="container py-4">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h4 fw-bold text-success mb-0">📦 Mis pedidos</h1>
+    <button id="reintentar-pedidos" type="button" class="btn btn-outline-success btn-sm">Reconectar</button>
   </div>
-</div>
-  <script src="js/firebase-config.js"></script>
-  <script src="js/auth.js"></script>
-  <script src="js/db.js"></script>
+  <p class="text-muted small">Los cambios de estado y los tiempos estimados se actualizan automáticamente mientras esta página está abierta.</p>
+  <div id="pedidos-error" class="alert alert-danger d-none" role="alert"></div>
+  <div id="lista-pedidos" aria-live="polite"><p>Cargando pedidos...</p></div>
+</main>
+<script src="js/firebase-config.js"></script><script src="js/auth.js"></script><script src="js/db.js"></script>
 <script>
-  async function iniciarPagina() {
-    const contenedor = document.getElementById("lista-pedidos");
+  let detenerPedidos = null;
+  let versionEscucha = 0;
+  let pedidosActuales = new Map();
+  const historialesAbiertos = new Set();
+  let temporizadorEstimaciones = null;
 
+  function detenerActualizaciones() {
+    versionEscucha++;
+    detenerPedidos?.(); detenerPedidos = null;
+    if (temporizadorEstimaciones) clearInterval(temporizadorEstimaciones);
+    temporizadorEstimaciones = null;
+  }
+
+  async function iniciarPagina() {
+    detenerActualizaciones();
+    const version = versionEscucha;
+    const usuario = auth.currentUser;
+    if (!usuario) return;
+    const aviso = document.getElementById("pedidos-error");
+    const contenedor = document.getElementById("lista-pedidos");
+    aviso.classList.add("d-none");
     try {
       await cargarNavbar();
-
-      const usuario = auth.currentUser;
-      if (!usuario) return;
-
-      const pedidos = await listarPedidosCliente(usuario.uid);
-
-      if (auth.currentUser?.uid !== usuario.uid) return;
-
-      contenedor.replaceChildren();
-
-      if (!pedidos.length) {
-        contenedor.textContent = "Todavía no tienes pedidos.";
-        return;
-      }
-
-      pedidos.forEach(pedido => {
-        contenedor.appendChild(crearTarjetaPedido(pedido));
+      if (auth.currentUser?.uid !== usuario.uid || version !== versionEscucha) return;
+      detenerPedidos = escucharPedidosCliente(usuario.uid, pedidos => {
+        if (auth.currentUser?.uid !== usuario.uid || version !== versionEscucha) return;
+        aviso.classList.add("d-none");
+        pedidosActuales = new Map(pedidos.map(pedido => [pedido.id, pedido]));
+        contenedor.replaceChildren();
+        if (!pedidos.length) contenedor.textContent = "Todavía no tienes pedidos.";
+        else pedidos.forEach(pedido => contenedor.appendChild(crearTarjetaPedido(pedido)));
+        actualizarEstimaciones();
+      }, error => {
+        if (auth.currentUser?.uid !== usuario.uid || version !== versionEscucha) return;
+        console.error("Error al escuchar pedidos:", error);
+        aviso.textContent = "Se interrumpió la consulta de pedidos. Los datos visibles pueden estar desactualizados. Revisa tu conexión y pulsa Reconectar.";
+        aviso.classList.remove("d-none");
+        if (!pedidosActuales.size) contenedor.textContent = "No se pudieron cargar tus pedidos.";
       });
+      temporizadorEstimaciones = setInterval(actualizarEstimaciones, 30000);
     } catch (error) {
+      if (auth.currentUser?.uid !== usuario.uid || version !== versionEscucha) return;
       console.error("Error al cargar pedidos:", error);
-      contenedor.textContent =
-        "No se pudieron cargar tus pedidos. Recarga para reintentar.";
+      aviso.textContent = "No se pudieron cargar tus pedidos. Pulsa Reconectar para reintentar.";
+      aviso.classList.remove("d-none");
     }
   }
 
   function textoPedido(etiqueta, clase, texto) {
-    const elemento = document.createElement(etiqueta);
-    elemento.className = clase;
-    elemento.textContent = texto;
-    return elemento;
+    const elemento = document.createElement(etiqueta); elemento.className = clase; elemento.textContent = texto; return elemento;
   }
-
-  function etiquetaEstadoPedido(estado) {
-    return estado === "listo_para_retirar"
-      ? "Listo para retirar"
-      : (ETIQUETAS_ESTADO[estado] ?? estado);
+  function etiquetaEstadoPedido(estado) { return ETIQUETAS_ESTADO[estado] ?? estado; }
+  function convertirFechaPedido(valor) {
+    if (!valor) return null;
+    if (typeof valor.toDate === "function") return valor.toDate();
+    const fecha = valor instanceof Date ? valor : new Date(valor);
+    return Number.isNaN(fecha.getTime()) ? null : fecha;
   }
-
-  function formatearFechaPedido(fecha) {
-    if (!(fecha instanceof Date) || Number.isNaN(fecha.getTime())) {
-      return "Fecha pendiente";
-    }
-
-    return fecha.toLocaleString("es-EC", {
-      timeZone: "America/Guayaquil"
+  function formatearFechaPedido(valor) {
+    const fecha = convertirFechaPedido(valor);
+    return fecha ? fecha.toLocaleString("es-EC", { timeZone: "America/Guayaquil" }) : "Fecha pendiente";
+  }
+  function actualizarEstimaciones() {
+    document.querySelectorAll("[data-estimacion-id]").forEach(elemento => {
+      const pedido = pedidosActuales.get(elemento.dataset.estimacionId);
+      if (!pedido) return;
+      const estimacion = obtenerEstimacionEntrega(pedido);
+      if (!estimacion) { elemento.textContent = "El repartidor todavía no ha comunicado un tiempo estimado."; return; }
+      const hora = estimacion.llegadaAproximada.toLocaleTimeString("es-EC", { timeZone: "America/Guayaquil", hour: "2-digit", minute: "2-digit" });
+      elemento.textContent = estimacion.vencida
+        ? `La última estimación ya transcurrió (llegada aproximada: ${hora}). Espera una actualización del repartidor. El pedido continúa En camino.`
+        : `Llegada aproximada: ${hora}. El repartidor comunicó ${estimacion.minutos} minutos el ${formatearFechaPedido(estimacion.actualizadaEn)}.`;
     });
   }
-
   function crearTarjetaPedido(pedido) {
-    const colores = {
-      pendiente: "warning",
-      confirmado: "info",
-      en_preparacion: "primary",
-      listo_para_retirar: "info",
-      en_camino: "secondary",
-      entregado: "success",
-      cancelado: "danger"
-    };
-
-    const tarjeta = document.createElement("article");
-    tarjeta.className = "card shadow-sm mb-3";
-
-    const cuerpo = document.createElement("div");
-    cuerpo.className = "card-body";
-
+    const colores = { pendiente:"warning", confirmado:"info", en_preparacion:"primary", listo_para_retirar:"info", en_camino:"secondary", entregado:"success", cancelado:"danger" };
+    const tarjeta = textoPedido("article", "card shadow-sm mb-3", "");
+    const cuerpo = textoPedido("div", "card-body", "");
     cuerpo.append(
       textoPedido("h2", "h6 fw-bold", `Pedido #${pedido.id}`),
-      textoPedido(
-        "p",
-        "text-muted small",
-        formatearFechaPedido(pedido.created_at?.toDate?.())
-      ),
-      textoPedido(
-        "span",
-        `badge bg-${colores[pedido.estado] ?? "secondary"} text-dark`,
-        etiquetaEstadoPedido(pedido.estado)
-      ),
-      textoPedido(
-        "p",
-        "small mt-3",
-        `Entrega: ${pedido.tipo === "retiro" ? "Retiro" : "Delivery"}. ` +
-        `Pago: ${pedido.forma_pago === "efectivo"
-          ? "Efectivo"
-          : "Transferencia"}.`
-      )
+      textoPedido("p", "text-muted small", formatearFechaPedido(pedido.created_at)),
+      textoPedido("span", `badge bg-${colores[pedido.estado] ?? "secondary"}`, etiquetaEstadoPedido(pedido.estado)),
+      textoPedido("p", "small mt-3", `Entrega: ${pedido.tipo === "retiro" ? "Retiro" : "Delivery"}. Pago: ${pedido.forma_pago === "efectivo" ? "Efectivo" : "Transferencia"}.`)
     );
-
-    const lista = document.createElement("ul");
-    lista.className = "list-group list-group-flush mb-3";
-
-    (pedido.detalles ?? []).forEach(detalle => {
-      lista.appendChild(
-        textoPedido(
-          "li",
-          "list-group-item px-0",
-          `${detalle.nombre_producto}: ` +
-          `${detalle.cantidad} ${detalle.unidad ?? "unidad"} ` +
-          `× ${fmt(detalle.precio_unitario)} = ${fmt(detalle.subtotal)}`
-        )
-      );
-    });
-
-    cuerpo.append(
-      lista,
-      textoPedido(
-        "p",
-        "fw-bold text-success mb-0",
-        `Total: ${fmt(pedido.total)}`
-      )
-    );
-
-    if (pedido.notas) {
-      cuerpo.appendChild(
-        textoPedido(
-          "p",
-          "small mt-2 mb-0",
-          `Observaciones: ${pedido.notas}`
-        )
-      );
-    }
-
-    cuerpo.appendChild(crearHistorialPedido(pedido));
-    tarjeta.appendChild(cuerpo);
-
-    return tarjeta;
-  }
-
-  function crearHistorialPedido(pedido) {
-    const contenedor = document.createElement("details");
-    contenedor.className = "mt-3";
-
-    const titulo = textoPedido(
-      "summary",
-      "text-success",
-      "Ver historial del pedido"
-    );
-
-    const lista = document.createElement("ol");
-    lista.className = "mt-2 mb-0";
-
-    function agregarEvento(estado, fecha, nota = "") {
-      const elemento = document.createElement("li");
-      elemento.className = "mb-2";
-
-      elemento.append(
-        textoPedido(
-          "div",
-          "fw-semibold",
-          etiquetaEstadoPedido(estado)
-        ),
-        textoPedido(
-          "small",
-          "text-muted d-block",
-          formatearFechaPedido(fecha)
-        )
-      );
-
-      if (nota) {
-        elemento.appendChild(
-          textoPedido(
-            "p",
-            "small mb-0",
-            estado === "cancelado"
-              ? `Motivo de cancelación: ${nota}`
-              : nota
-          )
-        );
+    if (pedido.tipo === "delivery") {
+      if (pedido.direccion_entrega) cuerpo.append(textoPedido("p", "small", `${pedido.zona_nombre || "Zona"}: ${pedido.direccion_entrega}`));
+      if (pedido.repartidor_nombre) cuerpo.append(textoPedido("p", "small", `Repartidor: ${pedido.repartidor_nombre}`));
+      if (pedido.estado === "en_camino") {
+        const estimacion = textoPedido("p", "alert alert-info small", ""); estimacion.dataset.estimacionId = pedido.id; cuerpo.append(estimacion);
       }
-
-      lista.appendChild(elemento);
     }
-
-    agregarEvento(
-      "pendiente",
-      pedido.created_at?.toDate?.(),
-      "Pedido registrado."
-    );
-
-    (pedido.historial ?? []).forEach(evento => {
-      agregarEvento(
-        evento.estado_nuevo,
-        evento.fecha ? new Date(evento.fecha) : null,
-        evento.nota ?? ""
-      );
-    });
-
-    contenedor.append(titulo, lista);
-    return contenedor;
+    const lista = textoPedido("ul", "list-group list-group-flush mb-3", "");
+    for (const detalle of pedido.detalles ?? []) lista.append(textoPedido("li", "list-group-item px-0", `${detalle.nombre_producto}: ${detalle.cantidad} ${detalle.unidad ?? "unidad"} × ${fmt(detalle.precio_unitario)} = ${fmt(detalle.subtotal)}`));
+    cuerpo.append(lista, textoPedido("p", "fw-bold text-success mb-0", `Total: ${fmt(pedido.total)}`));
+    if (pedido.notas) cuerpo.append(textoPedido("p", "small mt-2 mb-0", `Observaciones: ${pedido.notas}`));
+    cuerpo.append(crearHistorialPedido(pedido)); tarjeta.append(cuerpo); return tarjeta;
   }
-
+  function crearHistorialPedido(pedido) {
+    const contenedor = textoPedido("details", "mt-3", "");
+    contenedor.open = historialesAbiertos.has(pedido.id);
+    contenedor.addEventListener("toggle", () => {
+      if (!contenedor.isConnected) return;
+      if (contenedor.open) historialesAbiertos.add(pedido.id); else historialesAbiertos.delete(pedido.id);
+    });
+    const titulo = textoPedido("summary", "text-success", "Ver historial del pedido");
+    const lista = textoPedido("ol", "mt-2 mb-0", "");
+    function agregarEvento(titulo, fecha, nota = "") {
+      const elemento = textoPedido("li", "mb-2", "");
+      elemento.append(textoPedido("div", "fw-semibold", titulo), textoPedido("small", "text-muted d-block", formatearFechaPedido(fecha)));
+      if (nota) elemento.append(textoPedido("p", "small mb-0", nota));
+      lista.append(elemento);
+    }
+    agregarEvento("Pendiente", pedido.created_at, "Pedido registrado.");
+    for (const evento of pedido.historial ?? []) {
+      if (evento.tipo === "tiempo_estimado") agregarEvento(`Tiempo estimado: ${evento.minutos} minutos`, evento.fecha);
+      else agregarEvento(etiquetaEstadoPedido(evento.estado_nuevo), evento.fecha,
+        evento.estado_nuevo === "cancelado" ? `Motivo de cancelación: ${evento.nota ?? ""}` : evento.nota ?? "");
+    }
+    contenedor.append(titulo, lista); return contenedor;
+  }
+  document.getElementById("reintentar-pedidos").addEventListener("click", iniciarPagina);
+  window.addEventListener("pagehide", detenerActualizaciones);
+  window.addEventListener("pageshow", evento => { if (evento.persisted && auth.currentUser) iniciarPagina(); });
   protegerPagina(["cliente", "administrador"]);
 </script>
 </body></html>

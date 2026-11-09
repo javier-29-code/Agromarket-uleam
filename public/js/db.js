@@ -1269,3 +1269,72 @@ async function cambiarZonaDeliveryActiva(id, activo) {
   if (typeof activo !== "boolean") throw new Error("El estado debe ser booleano.");
   await db.collection("zonas_delivery").doc(id).update({ activo });
 }
+
+const MINUTOS_ESTIMACION_ENTREGA = Object.freeze([5, 10, 15, 20, 30]);
+
+function generarIdEstimacionEntrega() { return db.collection("pedidos").doc().id; }
+
+async function publicarTiempoEstimado(pedidoId, minutos, eventoId = generarIdEstimacionEntrega()) {
+  const usuario = auth.currentUser;
+  if (!usuario) throw new Error("Debes iniciar sesión.");
+  if (!Number.isInteger(minutos) || !MINUTOS_ESTIMACION_ENTREGA.includes(minutos)) {
+    throw new Error("Selecciona 5, 10, 15, 20 o 30 minutos.");
+  }
+  if (typeof eventoId !== "string" || !/^[A-Za-z0-9_-]{1,100}$/.test(eventoId)) {
+    throw new Error("El identificador del aviso no es válido.");
+  }
+  const ref = db.collection("pedidos").doc(pedidoId);
+  return db.runTransaction(async transaccion => {
+    const documento = await transaccion.get(ref);
+    const perfilDoc = await transaccion.get(db.collection("usuarios").doc(usuario.uid));
+    if (!documento.exists) throw new Error("El pedido no existe.");
+    const pedido = documento.data();
+    if (!perfilDoc.exists || perfilDoc.data().activo !== true || perfilDoc.data().rol !== "repartidor") {
+      throw new Error("Se requiere un repartidor activo.");
+    }
+    if (pedido.tipo !== "delivery" || pedido.repartidor_id !== usuario.uid) {
+      throw new Error("Solo el repartidor asignado puede publicar el tiempo estimado.");
+    }
+    if (auth.currentUser?.uid !== usuario.uid) throw new Error("La sesión cambió. Recarga la página.");
+    // Conservar el identificador del aviso al reintentar evita duplicar el historial.
+    if ((pedido.historial ?? []).some(evento => evento.tipo === "tiempo_estimado" && evento.evento_id === eventoId)) return false;
+    if (pedido.estado !== "en_camino") throw new Error("Solo puedes estimar la entrega de un pedido En camino.");
+    if (pedido.forma_pago === "transferencia" && pedido.estado_pago !== "verificado") throw new Error("La transferencia aún no está verificada.");
+    const fecha = firebase.firestore.FieldValue.serverTimestamp();
+    transaccion.update(ref, {
+      tiempo_estimado_minutos: minutos,
+      estimacion_actualizada_en: fecha,
+      estimacion_actualizada_por: usuario.uid,
+      estimacion_evento_id: eventoId,
+      updated_at: fecha,
+      historial: [...(pedido.historial ?? []), {
+        tipo: "tiempo_estimado", evento_id: eventoId,
+        estado_nuevo: "en_camino", fecha: new Date().toISOString(),
+        usuario_id: usuario.uid, nota: "Tiempo estimado actualizado.", minutos
+      }]
+    });
+    return true;
+  });
+}
+
+function obtenerEstimacionEntrega(pedido, ahora = Date.now()) {
+  if (pedido.tipo !== "delivery" || pedido.estado !== "en_camino"
+    || !MINUTOS_ESTIMACION_ENTREGA.includes(pedido.tiempo_estimado_minutos)) return null;
+  const milis = pedido.estimacion_actualizada_en?.toMillis?.()
+    ?? pedido.estimacion_actualizada_en?.toDate?.()?.getTime?.();
+  if (typeof milis !== "number" || !Number.isFinite(milis)) return null;
+  const llegada = milis + pedido.tiempo_estimado_minutos * 60000;
+  return { minutos: pedido.tiempo_estimado_minutos, actualizadaEn: new Date(milis),
+    llegadaAproximada: new Date(llegada), vencida: ahora > llegada };
+}
+
+function escucharPedidosCliente(clienteId, alRecibir, alError) {
+  if (!auth.currentUser || auth.currentUser.uid !== clienteId) throw new Error("La sesión cambió. Recarga la página.");
+  return db.collection("pedidos").where("cliente_id", "==", clienteId)
+    .onSnapshot(resultado => {
+      if (auth.currentUser?.uid !== clienteId) return;
+      const pedidos = resultado.docs.map(doc => ({ ...doc.data(), id: doc.id }))
+        .sort((a,b) => (b.created_at?.toMillis() ?? 0) - (a.created_at?.toMillis() ?? 0));
+      alRecibir(pedidos);
+    }, alError);
+}

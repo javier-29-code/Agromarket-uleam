@@ -19,6 +19,7 @@
 <script src="../js/firebase-config.js"></script><script src="../js/auth.js"></script><script src="../js/db.js"></script>
 <script>
   let ocupado = false;
+  const intentosEstimacion = new Map();
   function nodo(tag, clase = "", texto = "") { const el = document.createElement(tag); el.className = clase; el.textContent = texto; return el; }
   async function iniciarPagina() { await cargarNavbar(); await cargarEntregas(); }
   async function cargarEntregas() {
@@ -40,6 +41,18 @@
           ? `Transferencia verificada por administración. No cobrar al cliente. Total: ${fmt(pedido.total)}`
           : `${pedido.estado === "entregado" ? "Total cobrado" : "Total a cobrar"} en efectivo: ${fmt(pedido.total)}`));
         if (pedido.estado === "en_camino") {
+          const estimacion = obtenerEstimacionEntrega(pedido);
+          if (estimacion) tarjeta.append(nodo("p", "small text-primary", `Último tiempo comunicado: ${estimacion.minutos} min. Llegada aproximada: ${estimacion.llegadaAproximada.toLocaleTimeString("es-EC", { timeZone: "America/Guayaquil", hour: "2-digit", minute: "2-digit" })}.`));
+          const controles = nodo("div", "d-flex flex-wrap gap-2 align-items-center mb-3");
+          const selector = nodo("select", "form-select w-auto");
+          selector.setAttribute("aria-label", `Tiempo estimado para el pedido ${pedido.id}`);
+          for (const minutos of MINUTOS_ESTIMACION_ENTREGA) {
+            const opcion = nodo("option", "", `${minutos} minutos`); opcion.value = String(minutos); selector.append(opcion);
+          }
+          selector.value = String(pedido.tiempo_estimado_minutos || 10);
+          const publicar = nodo("button", "btn btn-outline-primary", "Publicar tiempo estimado"); publicar.type = "button";
+          publicar.addEventListener("click", () => actualizarEstimacion(pedido.id, Number(selector.value)));
+          controles.append(selector, publicar); tarjeta.append(controles);
           const boton = nodo("button", "btn btn-success align-self-start", "Confirmar entrega"); boton.type = "button";
           boton.addEventListener("click", () => entregar(pedido)); tarjeta.append(boton);
         } else if (pedido.estado === "entregado") {
@@ -50,7 +63,24 @@
     } catch (error) { console.error(error); aviso.textContent = "No se pudieron consultar las entregas. Revisa la consola y pulsa Actualizar."; aviso.classList.remove("d-none"); }
     finally { ocupado = false; bloquear(false); }
   }
-  function bloquear(valor) { document.querySelectorAll("main button").forEach(el => { el.disabled = valor; }); }
+  function bloquear(valor) { document.querySelectorAll("main button, main select").forEach(el => { el.disabled = valor; }); }
+  async function actualizarEstimacion(pedidoId, minutos) {
+    if (ocupado) return;
+    let intento = intentosEstimacion.get(pedidoId);
+    if (!intento || intento.minutos !== minutos) {
+      intento = { minutos, id: generarIdEstimacionEntrega() }; intentosEstimacion.set(pedidoId, intento);
+    }
+    ocupado = true; bloquear(true);
+    try {
+      const nuevo = await publicarTiempoEstimado(pedidoId, minutos, intento.id);
+      intentosEstimacion.delete(pedidoId);
+      mostrarToast(nuevo ? "Tiempo estimado publicado." : "El aviso ya estaba registrado.");
+    } catch (error) {
+      console.error("Error al publicar el tiempo:", error);
+      mostrarToast(error.code ? "No se pudo guardar. Conserva esta página para reintentar y revisa la consola." : error.message, "danger");
+    } finally { ocupado = false; bloquear(false); await cargarEntregas(); }
+  }
+
   async function entregar(pedido) {
     const pregunta = pedido.forma_pago === "transferencia"
       ? "¿Entregaste el pedido? La transferencia ya fue verificada; no cobres nuevamente. Esta acción cierra el pedido."

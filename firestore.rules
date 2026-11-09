@@ -594,6 +594,42 @@ service cloud.firestore {
         );
     }
 
+    function estimacionEntregaValida() {
+      let anterior = resource.data;
+      let nuevo = request.resource.data;
+      let ultimo = nuevo.historial[anterior.historial.size()];
+      return esRepartidor()
+        && anterior.tipo == "delivery" && anterior.estado == "en_camino"
+        && anterior.repartidor_id == request.auth.uid
+        && (anterior.forma_pago == "efectivo" || anterior.estado_pago == "verificado")
+        && nuevo.diff(anterior).affectedKeys().hasOnly([
+          "tiempo_estimado_minutos", "estimacion_actualizada_en",
+          "estimacion_actualizada_por", "estimacion_evento_id", "historial", "updated_at"
+        ])
+        && nuevo.tiempo_estimado_minutos is int
+        && nuevo.tiempo_estimado_minutos in [5, 10, 15, 20, 30]
+        && nuevo.estimacion_actualizada_en == request.time
+        && nuevo.estimacion_actualizada_por == request.auth.uid
+        && nuevo.estimacion_evento_id is string
+        && nuevo.estimacion_evento_id.matches("^[A-Za-z0-9_-]{1,100}$")
+        && nuevo.updated_at == request.time
+        && nuevo.historial.size() == anterior.historial.size() + 1
+        && nuevo.historial == anterior.historial.concat([ultimo])
+        && ultimo.keys().hasAll([
+          "tipo", "evento_id", "estado_nuevo", "fecha", "usuario_id", "nota", "minutos"
+        ])
+        && ultimo.keys().hasOnly([
+          "tipo", "evento_id", "estado_nuevo", "fecha", "usuario_id", "nota", "minutos"
+        ])
+        && ultimo.tipo == "tiempo_estimado"
+        && ultimo.evento_id == nuevo.estimacion_evento_id
+        && ultimo.estado_nuevo == "en_camino"
+        && ultimo.fecha is string && ultimo.fecha.size() <= 40
+        && ultimo.usuario_id == request.auth.uid
+        && ultimo.nota == "Tiempo estimado actualizado."
+        && ultimo.minutos == nuevo.tiempo_estimado_minutos;
+    }
+
     match /pedidos/{pedidoId} {
       allow create: if pedidoCompraValido(pedidoId);
 
@@ -619,6 +655,7 @@ service cloud.firestore {
       // Avances por tipo de pedido y cancelación con devolución de stock.
       allow update: if avanceRetiroValido()
         || avanceDeliveryValido()
+        || estimacionEntregaValida()
         || cancelacionPedidoValida(pedidoId);
 
       allow delete: if false;
