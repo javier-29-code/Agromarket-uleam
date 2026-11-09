@@ -104,6 +104,42 @@ service cloud.firestore {
         );
     }
 
+    function pagoCompraValido(pedido) {
+      return (
+          pedido.forma_pago == "efectivo"
+          && !pedido.keys().hasAny(["comprobante_url", "comprobante_public_id", "estado_pago"])
+        ) || (
+          pedido.forma_pago == "transferencia"
+          && pedido.comprobante_url is string && pedido.comprobante_url.size() <= 1500
+          && pedido.comprobante_url.matches("^https://res[.]cloudinary[.]com/mpoyykfh/image/upload/v[0-9]+/[A-Za-z0-9_/-]+[.](jpg|jpeg|png)$")
+          && pedido.comprobante_public_id is string
+          && pedido.comprobante_public_id.size() > 0 && pedido.comprobante_public_id.size() <= 500
+          && pedido.comprobante_public_id.matches("^[A-Za-z0-9_/-]+$")
+          && pedido.estado_pago == "pendiente_revision"
+        );
+    }
+
+    function revisionPagoValida() {
+      let anterior = resource.data;
+      let nuevo = request.resource.data;
+      let claves = nuevo.diff(anterior).affectedKeys();
+      return (
+          anterior.forma_pago == "efectivo"
+          && !claves.hasAny(["estado_pago", "pago_verificado_por", "pago_verificado_en"])
+        ) || (
+          anterior.forma_pago == "transferencia"
+          && (
+            (anterior.estado == "pendiente" && nuevo.estado == "confirmado"
+              && anterior.estado_pago == "pendiente_revision"
+              && nuevo.estado_pago == "verificado"
+              && nuevo.pago_verificado_por == request.auth.uid
+              && nuevo.pago_verificado_en == request.time)
+            || (anterior.estado != "pendiente" && anterior.estado_pago == "verificado"
+              && !claves.hasAny(["estado_pago", "pago_verificado_por", "pago_verificado_en"]))
+          )
+        );
+    }
+
     function pedidoCompraValido(pedidoId) {
       let pedido = request.resource.data;
 
@@ -119,14 +155,15 @@ service cloud.firestore {
           "estado", "producto_ids", "detalles", "subtotal",
           "tarifa_envio", "total", "total_centavos",
           "notas", "historial", "created_at",
-          "zona_id", "zona_nombre", "bloque", "piso", "aula", "direccion_entrega"
+          "zona_id", "zona_nombre", "bloque", "piso", "aula", "direccion_entrega",
+          "comprobante_url", "comprobante_public_id", "estado_pago"
         ])
         && pedido.cliente_id == request.auth.uid
         && pedido.cliente_nombre is string
         && pedido.cliente_nombre.size() > 0
         && pedido.cliente_nombre.size() <= 201
         && entregaCompraValida(pedido)
-        && pedido.forma_pago == "efectivo"
+        && pagoCompraValido(pedido)
         && pedido.estado == "pendiente"
         && pedido.created_at == request.time
         && pedido.notas is string
@@ -292,13 +329,15 @@ service cloud.firestore {
 
       return esAdministrador()
         && anterior.tipo == "retiro"
+        && revisionPagoValida()
         && anterior.estado in [
           "pendiente", "confirmado",
           "en_preparacion", "listo_para_retirar"
         ]
         && nuevo.estado == siguientes[anterior.estado]
         && nuevo.diff(anterior).affectedKeys().hasOnly([
-          "estado", "historial", "updated_at", "entregado_en"
+          "estado", "historial", "updated_at", "entregado_en",
+          "estado_pago", "pago_verificado_por", "pago_verificado_en"
         ])
         && nuevo.updated_at == request.time
         && nuevo.historial.size() == anterior.historial.size() + 1
@@ -518,10 +557,11 @@ service cloud.firestore {
       let claves = nuevo.diff(anterior).affectedKeys();
       let siguientes = {"pendiente": "confirmado", "confirmado": "en_preparacion"};
       return anterior.tipo == "delivery" && historialAvanceDeliveryValido()
+        && revisionPagoValida()
         && (
           (esAdministrador() && anterior.estado in ["pendiente", "confirmado"]
             && nuevo.estado == siguientes[anterior.estado]
-            && claves.hasOnly(["estado", "historial", "updated_at"]))
+            && claves.hasOnly(["estado", "historial", "updated_at", "estado_pago", "pago_verificado_por", "pago_verificado_en"]))
           || (esAdministrador() && anterior.estado == "en_preparacion"
             && nuevo.estado == "en_camino"
             && claves.hasOnly(["estado", "historial", "updated_at", "repartidor_id", "repartidor_nombre"])

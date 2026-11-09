@@ -241,6 +241,77 @@ class PagoEfectivoRetiro extends EstrategiaPago {
   }
 }
 
+// Configuración pública de subida. Nunca se incluye API Secret en el navegador.
+const CLOUDINARY_COMPROBANTES = Object.freeze({
+  cloudName: "mpoyykfh",
+  uploadPreset: "agromarket_comprobantes"
+});
+
+function esURLComprobanteValida(valor) {
+  return typeof valor === "string" && valor.length <= 1500
+    && /^https:\/\/res\.cloudinary\.com\/mpoyykfh\/image\/upload\/v[0-9]+\/[A-Za-z0-9_/-]+\.(jpg|jpeg|png)$/.test(valor);
+}
+
+function normalizarDatosPago(datos) {
+  if (datos?.forma_pago === "efectivo") return { forma_pago: "efectivo" };
+  if (datos?.forma_pago !== "transferencia" || !esURLComprobanteValida(datos.comprobante_url)
+    || typeof datos.comprobante_public_id !== "string" || datos.comprobante_public_id.length > 500
+    || !/^[A-Za-z0-9_/-]+$/.test(datos.comprobante_public_id)) {
+    throw new Error("El comprobante de transferencia no es válido.");
+  }
+  const ruta = new URL(datos.comprobante_url).pathname;
+  const identificador = ruta.replace(/^\/mpoyykfh\/image\/upload\/v[0-9]+\//, "").replace(/\.(jpg|jpeg|png)$/, "");
+  if (identificador !== datos.comprobante_public_id) throw new Error("El identificador del comprobante no coincide.");
+  return { forma_pago: "transferencia", comprobante_url: datos.comprobante_url,
+    comprobante_public_id: datos.comprobante_public_id, estado_pago: "pendiente_revision" };
+}
+
+class PagoTransferencia extends EstrategiaPago {
+  constructor(comprobante) { super(); this.comprobante = comprobante; }
+  preparar(totalCentavos) {
+    if (!Number.isSafeInteger(totalCentavos) || totalCentavos <= 0) throw new Error("El total del pedido no es válido.");
+    return normalizarDatosPago({ ...this.comprobante, forma_pago: "transferencia" });
+  }
+}
+
+async function validarArchivoComprobante(archivo) {
+  if (!archivo || !["image/jpeg", "image/png"].includes(archivo.type)
+    || archivo.size <= 0 || archivo.size > 5 * 1024 * 1024) {
+    throw new Error("Selecciona un comprobante JPG o PNG de hasta 5 MB.");
+  }
+  const cabecera = new Uint8Array(await archivo.slice(0, 8).arrayBuffer());
+  const png = [137,80,78,71,13,10,26,10].every((byte, i) => cabecera[i] === byte);
+  const jpg = cabecera[0] === 255 && cabecera[1] === 216 && cabecera[2] === 255;
+  if ((archivo.type === "image/png" && !png) || (archivo.type === "image/jpeg" && !jpg)) {
+    throw new Error("El archivo no corresponde a una imagen JPG o PNG válida.");
+  }
+}
+
+async function subirComprobanteTransferencia(archivo) {
+  if (!auth.currentUser) throw new Error("Debes iniciar sesión.");
+  await validarArchivoComprobante(archivo);
+  const formulario = new FormData();
+  formulario.append("file", archivo, archivo.type === "image/png" ? "comprobante.png" : "comprobante.jpg");
+  formulario.append("upload_preset", CLOUDINARY_COMPROBANTES.uploadPreset);
+  const controlador = new AbortController();
+  const temporizador = setTimeout(() => controlador.abort(), 60000);
+  try {
+    const respuesta = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_COMPROBANTES.cloudName}/image/upload`, {
+      method: "POST", body: formulario, signal: controlador.signal
+    });
+    const datos = await respuesta.json();
+    if (!respuesta.ok) throw new Error(`Cloudinary: ${datos.error?.message || "No se pudo subir el comprobante."}`);
+    if (datos.resource_type !== "image" || datos.type !== "upload" || !["jpg", "jpeg", "png"].includes(datos.format)) {
+      throw new Error("Cloudinary devolvió un tipo de archivo inesperado.");
+    }
+    const pago = normalizarDatosPago({ forma_pago: "transferencia", comprobante_url: datos.secure_url, comprobante_public_id: datos.public_id });
+    return { comprobante_url: pago.comprobante_url, comprobante_public_id: pago.comprobante_public_id };
+  } catch (error) {
+    if (error.name === "AbortError") throw new Error("La subida tardó demasiado. Comprueba tu conexión y reintenta.");
+    throw error;
+  } finally { clearTimeout(temporizador); }
+}
+
 // ── USUARIOS ─────────────────────────────────────────
 
 async function crearUsuarioDB(uid, datos) {
@@ -302,7 +373,7 @@ async function listarPedidosCliente(clienteId) {
     );
 }
 
-async function cambiarEstado(pedidoId, pedido, nuevoEstado, nota = "", repartidorId = null) {
+async function cambiarEstado(pedidoId, pedido, nuevoEstado, nota = "", repartidorId = null, pagoRevisado = false) {
   const usuario = auth.currentUser;
   if (!usuario) throw new Error("Debes iniciar sesión.");
   const notaLimpia = nota.trim();
@@ -333,6 +404,18 @@ async function cambiarEstado(pedidoId, pedido, nuevoEstado, nota = "", repartido
       }],
       updated_at: firebase.firestore.FieldValue.serverTimestamp()
     };
+    if (actual.forma_pago === "transferencia") {
+      if (actual.estado === "pendiente" && nuevoEstado === "confirmado") {
+        if (pagoRevisado !== true || actual.estado_pago !== "pendiente_revision" || !esURLComprobanteValida(actual.comprobante_url)) {
+          throw new Error("Revisa el comprobante y verifica el ingreso antes de confirmar.");
+        }
+        cambios.estado_pago = "verificado";
+        cambios.pago_verificado_por = usuario.uid;
+        cambios.pago_verificado_en = firebase.firestore.FieldValue.serverTimestamp();
+      } else if (actual.estado_pago !== "verificado") {
+        throw new Error("El pago por transferencia todavía no está verificado.");
+      }
+    }
     if (actual.tipo === "delivery" && nuevoEstado === "en_camino") {
       if (typeof repartidorId !== "string" || !repartidorId || repartidorId.includes("/")) {
         throw new Error("Selecciona un repartidor.");
@@ -736,7 +819,7 @@ async function crearPedidoCompra(
 
     // Delegar en la estrategia usando el total recalculado
     // con los precios consultados dentro de la transacción.
-    const datosPago = estrategiaPago.preparar(totalCentavos + tarifaCentavos);
+    const datosPago = normalizarDatosPago(estrategiaPago.preparar(totalCentavos + tarifaCentavos));
 
     const fecha = firebase.firestore.FieldValue.serverTimestamp();
 
@@ -745,7 +828,7 @@ async function crearPedidoCompra(
       cliente_nombre: `${perfil.nombre} ${perfil.apellido}`.trim(),
       tipo: entregaValidada.tipo,
       ...datosEntrega,
-      forma_pago: datosPago.forma_pago,
+      ...datosPago,
       estado: "pendiente",
       producto_ids: items.map(item => item.productoId),
       detalles,

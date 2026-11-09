@@ -35,7 +35,10 @@
         if (pedido.notas) tarjeta.append(nodo("p", "small", `Observaciones: ${pedido.notas}`));
         const lista = nodo("ul");
         for (const detalle of pedido.detalles || []) lista.append(nodo("li", "", `${detalle.nombre_producto}: ${detalle.cantidad} ${detalle.unidad}`));
-        tarjeta.append(lista, nodo("p", "fw-bold", `${pedido.estado === "entregado" ? "Total cobrado" : "Total a cobrar"} en efectivo: ${fmt(pedido.total)}`));
+        const transferencia = pedido.forma_pago === "transferencia";
+        tarjeta.append(lista, nodo("p", "fw-bold", transferencia
+          ? `Transferencia verificada por administración. No cobrar al cliente. Total: ${fmt(pedido.total)}`
+          : `${pedido.estado === "entregado" ? "Total cobrado" : "Total a cobrar"} en efectivo: ${fmt(pedido.total)}`));
         if (pedido.estado === "en_camino") {
           const boton = nodo("button", "btn btn-success align-self-start", "Confirmar entrega"); boton.type = "button";
           boton.addEventListener("click", () => entregar(pedido)); tarjeta.append(boton);
@@ -49,7 +52,10 @@
   }
   function bloquear(valor) { document.querySelectorAll("main button").forEach(el => { el.disabled = valor; }); }
   async function entregar(pedido) {
-    if (ocupado || !window.confirm("¿Entregaste el pedido y cobraste el efectivo? Esta acción cierra el pedido.")) return;
+    const pregunta = pedido.forma_pago === "transferencia"
+      ? "¿Entregaste el pedido? La transferencia ya fue verificada; no cobres nuevamente. Esta acción cierra el pedido."
+      : "¿Entregaste el pedido y cobraste el efectivo? Esta acción cierra el pedido.";
+    if (ocupado || !window.confirm(pregunta)) return;
     ocupado = true; bloquear(true);
     try { await cambiarEstado(pedido.id, pedido, "entregado"); mostrarToast("Entrega registrada."); }
     catch (error) { console.error(error); mostrarToast(error.code ? "No se pudo guardar. Actualiza y revisa la consola." : error.message, "danger"); }

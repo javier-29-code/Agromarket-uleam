@@ -58,7 +58,7 @@
     } finally { ocupado = false; bloquear(false); }
   }
   function bloquear(valor) {
-    document.querySelectorAll("main button, main select").forEach(el => { el.disabled = valor; });
+    document.querySelectorAll("main button, main select, main input").forEach(el => { el.disabled = valor; });
   }
   function renderizarPedidos() {
     const contenedor = document.getElementById("tabla-pedidos"); contenedor.replaceChildren();
@@ -80,6 +80,23 @@
       const lista = nodo("ul", "small");
       for (const detalle of pedido.detalles || []) lista.append(nodo("li", "", `${detalle.nombre_producto}: ${detalle.cantidad} ${detalle.unidad} — ${fmt(detalle.subtotal)}`));
       cuerpo.append(lista);
+      const transferencia = pedido.forma_pago === "transferencia";
+      let revision = null;
+      if (transferencia) {
+        cuerpo.append(nodo("p", "fw-bold", `Transferencia: ${pedido.estado_pago === "verificado" ? "verificada" : "pendiente de revisión"}`));
+        if (esURLComprobanteValida(pedido.comprobante_url)) {
+          const enlace = nodo("a", "btn btn-outline-primary btn-sm mb-2", "Abrir comprobante");
+          enlace.href = pedido.comprobante_url; enlace.target = "_blank"; enlace.rel = "noopener noreferrer";
+          cuerpo.append(enlace);
+        } else cuerpo.append(nodo("p", "text-danger", "El pedido no tiene un enlace de comprobante válido."));
+        if (pedido.estado === "pendiente") {
+          const etiqueta = nodo("label", "d-flex align-items-center gap-2 my-2");
+          revision = nodo("input", "form-check-input mt-0"); revision.type = "checkbox";
+          etiqueta.append(revision, document.createTextNode("Revisé el comprobante y verifiqué el ingreso de la transferencia."));
+          cuerpo.append(etiqueta);
+        }
+        if (pedido.estado === "cancelado") cuerpo.append(nodo("p", "small text-muted", "Si se recibió dinero, coordina su devolución por separado; cancelar aquí solo devuelve existencias."));
+      }
       const acciones = nodo("div", "d-flex flex-wrap align-items-center gap-2");
       let siguientes = obtenerTransicionesPedido(pedido);
       // La entrega de delivery la confirma el repartidor desde su panel.
@@ -98,7 +115,12 @@
       }
       for (const siguiente of siguientes) {
         const boton = nodo("button", "btn btn-success btn-sm", `Pasar a ${ETIQUETAS_ESTADO[siguiente]}`); boton.type = "button";
-        boton.addEventListener("click", () => ejecutar(() => cambiarEstado(pedido.id, pedido, siguiente, "", seleccion?.value || null), "Estado actualizado."));
+        boton.addEventListener("click", () => {
+          if (transferencia && siguiente === "confirmado" && !revision?.checked) {
+            mostrarToast("Abre el comprobante y verifica el ingreso antes de marcar la casilla.", "warning"); return;
+          }
+          ejecutar(() => cambiarEstado(pedido.id, pedido, siguiente, "", seleccion?.value || null, revision?.checked === true), "Estado actualizado.");
+        });
         acciones.append(boton);
       }
       if (["pendiente", "confirmado"].includes(pedido.estado)) {

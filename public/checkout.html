@@ -46,7 +46,18 @@
               <div class="col-md-4"><label for="entrega-aula" class="form-label">Aula u oficina</label><input id="entrega-aula" class="form-control" maxlength="80" placeholder="Ej.: Aula 101"></div>
             </div>
           </div>
-          <p class="mb-0"><strong>Pago:</strong> efectivo <span id="pago-momento">al retirar</span>.</p>
+          <label for="forma-pago" class="form-label">Forma de pago</label>
+          <select id="forma-pago" class="form-select mb-2">
+            <option value="efectivo">Efectivo</option>
+            <option value="transferencia">Transferencia con comprobante</option>
+          </select>
+          <p id="pago-efectivo" class="small mb-0">Paga en efectivo <span id="pago-momento">al retirar</span>.</p>
+          <div id="campos-transferencia" class="d-none">
+            <p class="small">Solicita los datos bancarios al Agro Market y adjunta el comprobante. El administrador verificará el ingreso antes de confirmar.</p>
+            <label for="comprobante-pago" class="form-label">Comprobante de transferencia</label>
+            <input id="comprobante-pago" type="file" class="form-control" accept="image/jpeg,image/png">
+            <p class="form-text mb-0">JPG o PNG, hasta 5 MB. Para la demostración utiliza un comprobante ficticio sin datos bancarios reales.</p>
+          </div>
         </div>
       </fieldset>
       <div class="mb-3">
@@ -58,6 +69,7 @@
         <p id="checkout-envio" class="mb-1"></p>
         <p id="checkout-total" class="fs-5 fw-bold"></p>
       </div>
+      <p id="checkout-estado" class="text-success" role="status"></p>
       <p class="text-muted small">Los precios, el stock y la tarifa de entrega se comprobarán nuevamente al confirmar.</p>
       <div class="d-flex justify-content-between">
         <a href="carrito.html" class="btn btn-outline-success">Modificar carrito</a>
@@ -76,6 +88,12 @@
     let zonasDelivery = [];
     const pedidoConfirmacionId = db.collection("pedidos").doc().id;
     const porId = id => document.getElementById(id);
+
+    function actualizarPago() {
+      const transferencia = porId("forma-pago").value === "transferencia";
+      porId("campos-transferencia").classList.toggle("d-none", !transferencia);
+      porId("pago-efectivo").classList.toggle("d-none", transferencia);
+    }
 
     function zonaSeleccionada() {
       return zonasDelivery.find(zona => zona.id === porId("zona-delivery").value);
@@ -126,6 +144,7 @@
         }
         porId("checkout-resumen").classList.remove("d-none");
         actualizarEntrega();
+        actualizarPago();
       } catch (error) {
         console.error("Error al preparar el pedido:", error);
         porId("checkout-error").textContent = error.code
@@ -162,7 +181,10 @@
       try {
         if (!intentoCompra) {
           const entrega = obtenerEntrega();
-          intentoCompra = {
+          const formaPago = porId("forma-pago").value;
+          const archivo = formaPago === "transferencia" ? porId("comprobante-pago").files[0] : null;
+          if (formaPago === "transferencia") await validarArchivoComprobante(archivo);
+          intentoCompra = { formaPago, archivo, comprobanteSubido: null,
             carrito: resumenPedido.detalles.map(detalle => ({ productoId: detalle.producto_id, cantidad: detalle.cantidad })),
             notas: notas.value, entrega,
             clave: claveCarritoActual(),
@@ -172,8 +194,16 @@
         if (claveCarritoActual() !== intentoCompra.clave) throw new Error("La sesión cambió. Recarga la página.");
         notas.disabled = true;
         porId("datos-entrega").disabled = true;
-        const pago = intentoCompra.entrega.tipo === "delivery"
-          ? new PagoEfectivoDelivery() : new PagoEfectivoRetiro();
+        if (intentoCompra.formaPago === "transferencia" && !intentoCompra.comprobanteSubido) {
+          porId("checkout-estado").textContent = "Subiendo comprobante...";
+          // Se sube fuera de runTransaction: los reintentos de Firestore no suben otra imagen.
+          intentoCompra.comprobanteSubido = await subirComprobanteTransferencia(intentoCompra.archivo);
+        }
+        if (claveCarritoActual() !== intentoCompra.clave) throw new Error("La sesión cambió. Recarga la página.");
+        const pago = intentoCompra.formaPago === "transferencia"
+          ? new PagoTransferencia(intentoCompra.comprobanteSubido)
+          : intentoCompra.entrega.tipo === "delivery" ? new PagoEfectivoDelivery() : new PagoEfectivoRetiro();
+        porId("checkout-estado").textContent = "Registrando pedido...";
         const pedidoId = await crearPedidoCompra(
           intentoCompra.carrito, intentoCompra.notas, resumenPedido,
           pedidoConfirmacionId, pago, intentoCompra.entrega
@@ -206,9 +236,11 @@
         aviso.classList.remove("d-none");
       } finally {
         confirmandoPedido = false;
+        porId("checkout-estado").textContent = "";
         if (!pedidoCreado) actualizarEntrega();
       }
     }
+    porId("forma-pago").addEventListener("change", actualizarPago);
     porId("tipo-entrega").addEventListener("change", actualizarEntrega);
     porId("zona-delivery").addEventListener("change", actualizarEntrega);
     porId("btn-confirmar-pedido").addEventListener("click", confirmarPedido);
