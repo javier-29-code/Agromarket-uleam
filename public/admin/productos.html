@@ -17,6 +17,7 @@
       <a class="nav-link text-white" href="dashboard.html">Dashboard</a>
       <a class="nav-link text-white" href="productos.html">Productos</a>
       <a class="nav-link text-white" href="pedidos.html">Pedidos</a>
+      <a class="nav-link text-white" href="categorias.html">Categorías</a>
       <a class="nav-link text-white" href="../catalogo.html">Ver sitio</a>
       <a class="nav-link text-white" href="#" onclick="cerrarSesion()">Salir</a>
     </div>
@@ -74,6 +75,18 @@
       <div class="mb-3">
         <label class="form-label">Stock inicial</label>
         <input type="number" id="np-stock" class="form-control" value="0" min="0">
+      </div>
+      <div class="mb-3">
+        <label for="np-categoria" class="form-label">Categoría</label>
+        <select id="np-categoria" class="form-select"><option value="">Sin categoría</option></select>
+      </div>
+      <div class="mb-3">
+        <label for="np-imagen" class="form-label">Foto del producto (opcional)</label>
+        <input id="np-imagen" type="file" class="form-control" accept="image/jpeg,image/png">
+        <div class="form-text">JPG o PNG, hasta 5 MB.</div>
+        <img id="np-preview" class="d-none mt-2 rounded" alt="Vista previa del producto" style="width:160px;height:120px;object-fit:contain">
+        <label class="d-block mt-2"><input type="checkbox" id="np-quitar-imagen"> Quitar la imagen actual</label>
+        <p id="np-progreso" class="small text-success mt-2" role="status"></p>
       </div>
       <div class="mb-3">
         <label class="form-label">Descripción</label>
@@ -176,9 +189,56 @@
 <script>
 
   let productoEnEdicion = null;
+  let nuevoProductoId = null;
+  let categoriasProducto = [];
+  let imagenActual = null;
+  let archivoSubido = null;
+  let vistaTemporal = null;
+  let guardandoProducto = false;
+
+function cargarSelectorCategorias(actual = "") {
+  const selector = document.getElementById("np-categoria");
+  selector.replaceChildren();
+  const vacia = document.createElement("option"); vacia.value = ""; vacia.textContent = "Sin categoría"; selector.append(vacia);
+  categoriasProducto.filter(c => c.activo || c.id === actual).forEach(c => {
+    const opcion = document.createElement("option"); opcion.value = c.id;
+    opcion.textContent = c.nombre + (c.activo ? "" : " (inactiva)"); selector.append(opcion);
+  });
+  selector.value = actual;
+}
+
+function mostrarPreview(url) {
+  const imagen = document.getElementById("np-preview");
+  if (vistaTemporal) { URL.revokeObjectURL(vistaTemporal); vistaTemporal = null; }
+  if (url) { imagen.src = url; imagen.classList.remove("d-none"); }
+  else { imagen.removeAttribute("src"); imagen.classList.add("d-none"); }
+}
+
+document.getElementById("np-imagen").addEventListener("change", () => {
+  archivoSubido = null;
+  document.getElementById("np-quitar-imagen").checked = false;
+  const archivo = document.getElementById("np-imagen").files[0];
+  mostrarPreview(null);
+  if (archivo) { vistaTemporal = URL.createObjectURL(archivo); document.getElementById("np-preview").src = vistaTemporal; document.getElementById("np-preview").classList.remove("d-none"); }
+  else mostrarPreview(imagenActual?.imagen_url);
+});
+document.getElementById("np-quitar-imagen").addEventListener("change", evento => {
+  if (evento.target.checked) { document.getElementById("np-imagen").value = ""; archivoSubido = null; mostrarPreview(null); }
+  else mostrarPreview(imagenActual?.imagen_url);
+});
+document.getElementById("modalNuevo").addEventListener("hide.bs.modal", evento => {
+  if (guardandoProducto) evento.preventDefault();
+});
 
 function prepararNuevoProducto() {
   productoEnEdicion = null;
+  nuevoProductoId = generarIdProducto();
+  imagenActual = null; archivoSubido = null;
+  document.getElementById("np-imagen").value = "";
+  document.getElementById("np-quitar-imagen").checked = false;
+  document.getElementById("np-progreso").textContent = "";
+  mostrarPreview(null);
+  cargarSelectorCategorias();
 
   document.querySelector("#modalNuevo .modal-title").textContent =
     "Nuevo producto";
@@ -201,6 +261,9 @@ async function editarProducto(id) {
 
     prepararNuevoProducto();
     productoEnEdicion = id;
+    cargarSelectorCategorias(producto.categoria_id || "");
+    imagenActual = producto.imagen_url ? { imagen_url: producto.imagen_url, imagen_public_id: producto.imagen_public_id ?? null } : null;
+    mostrarPreview(esURLImagenCloudinaryValida(producto.imagen_url) ? producto.imagen_url : null);
 
     document.querySelector("#modalNuevo .modal-title").textContent =
       "Editar producto";
@@ -227,13 +290,14 @@ async function editarProducto(id) {
   protegerPagina(["administrador"]);
 
   async function iniciarPagina() {
-    cargarNavbar();
-    cargarProductos();
+    await cargarNavbar();
+    categoriasProducto = await listarCategorias();
+    await cargarProductos();
   }
 
   async function cargarProductos() {
-    const snap = await db.collection("productos").orderBy("nombre").get();
-    const prods = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const [prods, categorias] = await Promise.all([listarProductosAdmin(), listarCategorias()]);
+    categoriasProducto = categorias;
     const el = document.getElementById("tabla-productos");
 
     if (!prods.length) {
@@ -242,61 +306,42 @@ async function editarProducto(id) {
       return;
     }
 
-    el.innerHTML = `<table class="table mb-0 align-middle">
-      <thead class="table-success">
-        <tr><th>Producto</th><th>Precio</th><th class="text-center">Stock</th>
-            <th class="text-center">Estado</th>
-            <th class="text-center">Acciones</th>
-            </tr>
-      </thead>
-      <tbody>
-        ${prods.map(p => `<tr>
-          <td>
-            <div class="fw-semibold">${p.nombre}</div>
-            <small class="text-muted">${p.descripcion || ""}</small>
-          </td>
-          <td class="fw-bold text-success">${fmt(p.precio)} /${p.unidad}</td>
-          <td class="text-center ${(p.stock_actual||0)<=0?"text-danger fw-bold":""}">
-            ${p.stock_actual ?? 0}
-          </td>
-          <td class="text-center">
-            <span class="badge bg-${p.activo?"success":"secondary"}">
-              ${p.activo ? "Activo" : "Inactivo"}
-            </span>
-          </td>
-          <td class="text-center">
-            <button
-            type="button"
-            class="btn btn-sm btn-outline-${p.activo ? "danger" : "success"}"
-            onclick="cambiarVisibilidadProducto('${p.id}', ${!p.activo}, this)">
-            ${p.activo ? "Desactivar" : "Reactivar"}
-            </button>
-
-            <button
-            type="button"
-            class="btn btn-sm btn-outline-primary me-1"
-            onclick="editarProducto('${p.id}')">
-            editar
-            </button>
-
-            <button
-              type="button"
-              class="btn btn-sm btn-outline-secondary"
-              onclick="abrirMovimientoStock('${p.id}')">
-              Stock
-            </button>
-
-            <button
-              type="button"
-              class="btn btn-sm btn-outline-info"
-              onclick="abrirHistorialStock('${p.id}')">
-              Historial
-            </button>
-
-          </td>
-        </tr>`).join("")}
-      </tbody>
-    </table>`;
+    el.replaceChildren();
+    const tabla = document.createElement("table"); tabla.className = "table mb-0 align-middle";
+    const cabecera = tabla.createTHead().insertRow();
+    ["Producto", "Categoría", "Precio", "Stock", "Estado", "Acciones"].forEach(texto => {
+      const th = document.createElement("th"); th.textContent = texto; cabecera.append(th);
+    });
+    const cuerpo = tabla.createTBody();
+    const nombresCategorias = new Map(categoriasProducto.map(c => [c.id, c.nombre]));
+    for (const p of prods) {
+      const fila = cuerpo.insertRow();
+      const informacion = fila.insertCell();
+      if (esURLImagenCloudinaryValida(p.imagen_url)) {
+        const foto = document.createElement("img"); foto.src = p.imagen_url; foto.alt = p.nombre; foto.loading = "lazy";
+        foto.style.cssText = "width:64px;height:48px;object-fit:cover;border-radius:6px;margin-right:8px";
+        foto.addEventListener("error", () => foto.remove(), { once: true }); informacion.append(foto);
+      }
+      const nombre = document.createElement("div"); nombre.className = "fw-semibold"; nombre.textContent = p.nombre;
+      const descripcion = document.createElement("small"); descripcion.className = "text-muted"; descripcion.textContent = p.descripcion || "";
+      informacion.append(nombre, descripcion);
+      fila.insertCell().textContent = nombresCategorias.get(p.categoria_id) || "Sin categoría";
+      fila.insertCell().textContent = `${fmt(p.precio)} /${p.unidad}`;
+      fila.insertCell().textContent = p.stock_actual ?? 0;
+      fila.insertCell().textContent = p.activo ? "Activo" : "Inactivo";
+      const acciones = fila.insertCell();
+      for (const [texto, clase, accion] of [
+        [p.activo ? "Desactivar" : "Reactivar", p.activo ? "danger" : "success", boton => cambiarVisibilidadProducto(p.id, !p.activo, boton)],
+        ["Editar", "primary", () => editarProducto(p.id)],
+        ["Stock", "secondary", () => abrirMovimientoStock(p.id)],
+        ["Historial", "info", () => abrirHistorialStock(p.id)]
+      ]) {
+        const boton = document.createElement("button"); boton.type = "button";
+        boton.className = `btn btn-sm btn-outline-${clase} m-1`; boton.textContent = texto;
+        boton.addEventListener("click", () => accion(boton)); acciones.append(boton);
+      }
+    }
+    const envoltura = document.createElement("div"); envoltura.className = "table-responsive"; envoltura.append(tabla); el.append(envoltura);
   }
 
 
@@ -319,124 +364,52 @@ async function editarProducto(id) {
 }
 
 async function guardarProducto() {
-  const boton = document.querySelector(
-    '#modalNuevo button[onclick="guardarProducto()"]'
-  );
-
-  boton.disabled = true;
-
+  if (guardandoProducto) return;
+  guardandoProducto = true;
+  const modal = document.getElementById("modalNuevo");
+  modal.querySelectorAll("input, select, textarea, button").forEach(el => { el.disabled = true; });
+  const progreso = document.getElementById("np-progreso");
+  let guardado = false;
+  const editando = productoEnEdicion !== null;
   try {
     const datos = {
       nombre: document.getElementById("np-nombre").value,
       precio: document.getElementById("np-precio").value,
       unidad: document.getElementById("np-unidad").value,
-      descripcion: document.getElementById("np-desc").value
+      descripcion: document.getElementById("np-desc").value,
+      categoria_id: document.getElementById("np-categoria").value || null,
+      imagen_url: null, imagen_public_id: null
     };
-
-    const editando = productoEnEdicion !== null;
-
-    if (editando) {
-      await actualizarProducto(productoEnEdicion, datos);
-    } else {
-      const stockTexto = document.getElementById("np-stock").value;
-
-      if (!stockTexto.trim()) {
-        throw new Error("Ingresa el stock inicial.");
-      }
-
-      await crearProducto({
-        ...datos,
-        stock_actual: Number(stockTexto)
-      });
+    const archivo = document.getElementById("np-imagen").files[0];
+    if (!archivo && !document.getElementById("np-quitar-imagen").checked && imagenActual) Object.assign(datos, imagenActual);
+    validarDatosProducto(datos);
+    const stockTexto = document.getElementById("np-stock").value;
+    if (!editando && (!stockTexto.trim() || !Number.isFinite(Number(stockTexto)) || Number(stockTexto) < 0)) throw new Error("Ingresa un stock inicial válido.");
+    if (archivo) {
+      progreso.textContent = "Subiendo imagen...";
+      if (!archivoSubido || archivoSubido.archivo !== archivo) archivoSubido = { archivo, datos: await subirImagenProducto(archivo) };
+      datos.imagen_url = archivoSubido.datos.imagen_url;
+      datos.imagen_public_id = archivoSubido.datos.imagen_public_id;
     }
-
-    bootstrap.Modal.getInstance(
-      document.getElementById("modalNuevo")
-    ).hide();
-
-    prepararNuevoProducto();
-
-    mostrarToast(
-      editando ? "Producto actualizado." : "Producto creado."
-    );
+    progreso.textContent = "Guardando producto...";
+    if (editando) await actualizarProducto(productoEnEdicion, datos);
+    else await crearProducto({ ...datos, stock_actual: Number(stockTexto) }, nuevoProductoId);
+    guardado = true;
   } catch (error) {
     console.error("Error al guardar el producto:", error);
-
-    mostrarToast(
-      error.code
-        ? "No se pudo guardar el producto."
-        : error.message,
-      "danger"
-    );
-    return;
+    mostrarToast(error.code ? "No se pudo guardar. Revisa tu conexión y permisos." : error.message, "danger");
   } finally {
-    boton.disabled = false;
+    guardandoProducto = false;
+    modal.querySelectorAll("input, select, textarea, button").forEach(el => { el.disabled = false; });
+    document.getElementById("np-stock").disabled = editando;
+    progreso.textContent = "";
   }
-
-  try {
-    await cargarProductos();
-  } catch (error) {
-    console.error("Error al actualizar la tabla:", error);
-    mostrarToast(
-      "El producto se guardó, pero debes recargar la tabla.",
-      "warning"
-    );
-  }
-}
-
-function validarDatosProducto(datos) {
-  const nombre = datos.nombre.trim();
-  const descripcion = datos.descripcion.trim();
-  const precio = Number(datos.precio);
-  const unidades = ["unidad", "kg", "lb", "manojo", "docena"];
-
-  if (!nombre || nombre.length > 100) {
-    throw new Error("El nombre debe tener entre 1 y 100 caracteres.");
-  }
-
-  if (!Number.isFinite(precio) || precio <= 0) {
-    throw new Error("Ingresa un precio válido mayor que cero.");
-  }
-
-  if (!unidades.includes(datos.unidad)) {
-    throw new Error("Selecciona una unidad válida.");
-  }
-
-  if (descripcion.length > 1000) {
-    throw new Error("La descripción admite hasta 1000 caracteres.");
-  }
-
-  return {
-    nombre,
-    descripcion,
-    precio: Math.round(precio * 100) / 100,
-    unidad: datos.unidad
-  };
-}
-
-async function crearProducto(datos) {
-  const producto = validarDatosProducto(datos);
-  const stock = Number(datos.stock_actual);
-
-  if (!Number.isFinite(stock) || stock < 0) {
-    throw new Error("El stock debe ser un número mayor o igual a cero.");
-  }
-
-  return db.collection("productos").add({
-    ...producto,
-    stock_actual: stock,
-    activo: true,
-    created_at: firebase.firestore.FieldValue.serverTimestamp()
-  });
-}
-
-async function actualizarProducto(id, datos) {
-  const producto = validarDatosProducto(datos);
-
-  await db.collection("productos").doc(id).update({
-    ...producto,
-    updated_at: firebase.firestore.FieldValue.serverTimestamp()
-  });
+  if (!guardado) return;
+  bootstrap.Modal.getInstance(modal).hide();
+  prepararNuevoProducto();
+  mostrarToast(editando ? "Producto actualizado." : "Producto creado.");
+  try { await cargarProductos(); }
+  catch (error) { console.error(error); mostrarToast("Se guardó el producto. Recarga para actualizar la tabla.", "warning"); }
 }
 
 let productoStockId = null;

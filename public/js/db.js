@@ -247,23 +247,33 @@ const CLOUDINARY_COMPROBANTES = Object.freeze({
   uploadPreset: "agromarket_comprobantes"
 });
 
-function esURLComprobanteValida(valor) {
+function esURLImagenCloudinaryValida(valor) {
   return typeof valor === "string" && valor.length <= 1500
     && /^https:\/\/res\.cloudinary\.com\/mpoyykfh\/image\/upload\/v[0-9]+\/[A-Za-z0-9_/-]+\.(jpg|jpeg|png)$/.test(valor);
 }
 
+// Alias conservado para los comprobantes y páginas de pedidos existentes.
+function esURLComprobanteValida(valor) { return esURLImagenCloudinaryValida(valor); }
+
+function validarImagenCloudinary(imagen) {
+  if (!esURLImagenCloudinaryValida(imagen?.url) || typeof imagen.publicId !== "string"
+    || imagen.publicId.length > 500 || !/^[A-Za-z0-9_/-]+$/.test(imagen.publicId)) {
+    throw new Error("La imagen de Cloudinary no es válida.");
+  }
+  const identificador = new URL(imagen.url).pathname
+    .replace(/^\/mpoyykfh\/image\/upload\/v[0-9]+\//, "").replace(/\.(jpg|jpeg|png)$/, "");
+  if (identificador !== imagen.publicId) throw new Error("El identificador de la imagen no coincide.");
+  return { url: imagen.url, publicId: imagen.publicId };
+}
+
 function normalizarDatosPago(datos) {
   if (datos?.forma_pago === "efectivo") return { forma_pago: "efectivo" };
-  if (datos?.forma_pago !== "transferencia" || !esURLComprobanteValida(datos.comprobante_url)
-    || typeof datos.comprobante_public_id !== "string" || datos.comprobante_public_id.length > 500
-    || !/^[A-Za-z0-9_/-]+$/.test(datos.comprobante_public_id)) {
-    throw new Error("El comprobante de transferencia no es válido.");
-  }
-  const ruta = new URL(datos.comprobante_url).pathname;
-  const identificador = ruta.replace(/^\/mpoyykfh\/image\/upload\/v[0-9]+\//, "").replace(/\.(jpg|jpeg|png)$/, "");
-  if (identificador !== datos.comprobante_public_id) throw new Error("El identificador del comprobante no coincide.");
-  return { forma_pago: "transferencia", comprobante_url: datos.comprobante_url,
-    comprobante_public_id: datos.comprobante_public_id, estado_pago: "pendiente_revision" };
+  if (datos?.forma_pago !== "transferencia") throw new Error("El comprobante de transferencia no es válido.");
+  let imagen;
+  try { imagen = validarImagenCloudinary({ url: datos.comprobante_url, publicId: datos.comprobante_public_id }); }
+  catch (error) { throw new Error(`El comprobante no es válido: ${error.message}`); }
+  return { forma_pago: "transferencia", comprobante_url: imagen.url,
+    comprobante_public_id: imagen.publicId, estado_pago: "pendiente_revision" };
 }
 
 class PagoTransferencia extends EstrategiaPago {
@@ -275,9 +285,13 @@ class PagoTransferencia extends EstrategiaPago {
 }
 
 async function validarArchivoComprobante(archivo) {
+  return validarArchivoImagen(archivo, "comprobante");
+}
+
+async function validarArchivoImagen(archivo, etiqueta = "imagen") {
   if (!archivo || !["image/jpeg", "image/png"].includes(archivo.type)
     || archivo.size <= 0 || archivo.size > 5 * 1024 * 1024) {
-    throw new Error("Selecciona un comprobante JPG o PNG de hasta 5 MB.");
+    throw new Error(`Selecciona un archivo de ${etiqueta} JPG o PNG de hasta 5 MB.`);
   }
   const cabecera = new Uint8Array(await archivo.slice(0, 8).arrayBuffer());
   const png = [137,80,78,71,13,10,26,10].every((byte, i) => cabecera[i] === byte);
@@ -288,11 +302,26 @@ async function validarArchivoComprobante(archivo) {
 }
 
 async function subirComprobanteTransferencia(archivo) {
+  const imagen = await subirImagenCloudinary(archivo, CLOUDINARY_COMPROBANTES.uploadPreset, "comprobante");
+  return { comprobante_url: imagen.url, comprobante_public_id: imagen.publicId };
+}
+
+async function subirImagenProducto(archivo) {
+  const usuario = auth.currentUser;
+  if (!usuario) throw new Error("Debes iniciar sesión.");
+  const perfil = await obtenerUsuario(usuario.uid);
+  if (perfil?.rol !== "administrador" || perfil.activo !== true) throw new Error("Se requiere acceso administrativo.");
+  if (auth.currentUser?.uid !== usuario.uid) throw new Error("La sesión cambió. Recarga la página.");
+  const imagen = await subirImagenCloudinary(archivo, "agromarket_productos");
+  return { imagen_url: imagen.url, imagen_public_id: imagen.publicId };
+}
+
+async function subirImagenCloudinary(archivo, preset, etiqueta = "imagen") {
   if (!auth.currentUser) throw new Error("Debes iniciar sesión.");
-  await validarArchivoComprobante(archivo);
+  await validarArchivoImagen(archivo, etiqueta);
   const formulario = new FormData();
   formulario.append("file", archivo, archivo.type === "image/png" ? "comprobante.png" : "comprobante.jpg");
-  formulario.append("upload_preset", CLOUDINARY_COMPROBANTES.uploadPreset);
+  formulario.append("upload_preset", preset);
   const controlador = new AbortController();
   const temporizador = setTimeout(() => controlador.abort(), 60000);
   try {
@@ -304,8 +333,7 @@ async function subirComprobanteTransferencia(archivo) {
     if (datos.resource_type !== "image" || datos.type !== "upload" || !["jpg", "jpeg", "png"].includes(datos.format)) {
       throw new Error("Cloudinary devolvió un tipo de archivo inesperado.");
     }
-    const pago = normalizarDatosPago({ forma_pago: "transferencia", comprobante_url: datos.secure_url, comprobante_public_id: datos.public_id });
-    return { comprobante_url: pago.comprobante_url, comprobante_public_id: pago.comprobante_public_id };
+    return validarImagenCloudinary({ url: datos.secure_url, publicId: datos.public_id });
   } catch (error) {
     if (error.name === "AbortError") throw new Error("La subida tardó demasiado. Comprueba tu conexión y reintenta.");
     throw error;
@@ -458,58 +486,100 @@ async function cambiarEstadoActivoProducto(id, activo) {
 }
 
 function validarDatosProducto(datos) {
-  const nombre = datos.nombre.trim();
-  const descripcion = datos.descripcion.trim();
+  const nombre = String(datos.nombre ?? "").trim();
+  const descripcion = String(datos.descripcion ?? "").trim();
   const precio = Number(datos.precio);
-  const unidades = ["unidad", "kg", "lb", "manojo", "docena"];
-
-  if (!nombre || nombre.length > 100) {
-    throw new Error("El nombre debe tener entre 1 y 100 caracteres.");
+  const centavos = Math.round(precio * 100);
+  if (!nombre || nombre.length > 100) throw new Error("El nombre debe tener entre 1 y 100 caracteres.");
+  if (!Number.isFinite(precio) || precio <= 0 || !Number.isSafeInteger(centavos) || centavos < 1 || centavos > 100000000) {
+    throw new Error("Ingresa un precio de al menos $0.01 y como máximo $1,000,000.");
   }
-
-  if (!Number.isFinite(precio) || precio <= 0) {
-    throw new Error("Ingresa un precio válido mayor que cero.");
+  if (!["unidad", "kg", "lb", "manojo", "docena"].includes(datos.unidad)) throw new Error("Selecciona una unidad válida.");
+  if (descripcion.length > 1000) throw new Error("La descripción admite hasta 1000 caracteres.");
+  const categoriaId = datos.categoria_id || null;
+  if (categoriaId !== null && (typeof categoriaId !== "string" || categoriaId.length > 100 || categoriaId.includes("/"))) throw new Error("Selecciona una categoría válida.");
+  const imagenUrl = datos.imagen_url || null;
+  const imagenId = datos.imagen_public_id || null;
+  if (imagenUrl !== null || imagenId !== null) {
+    validarImagenCloudinary({ url: imagenUrl, publicId: imagenId });
   }
-
-  if (!unidades.includes(datos.unidad)) {
-    throw new Error("Selecciona una unidad válida.");
-  }
-
-  if (descripcion.length > 1000) {
-    throw new Error("La descripción admite hasta 1000 caracteres.");
-  }
-
-  return {
-    nombre,
-    descripcion,
-    precio: Math.round(precio * 100) / 100,
-    unidad: datos.unidad
-  };
+  return { nombre, descripcion, precio: centavos / 100, unidad: datos.unidad,
+    categoria_id: categoriaId, imagen_url: imagenUrl, imagen_public_id: imagenId };
 }
 
-async function crearProducto(datos) {
+function generarIdProducto() { return db.collection("productos").doc().id; }
+
+async function validarCategoriaAsignada(transaccion, categoriaId, categoriaAnterior = null) {
+  if (!categoriaId) return;
+  const documento = await transaccion.get(db.collection("categorias").doc(categoriaId));
+  if (!documento.exists || (documento.data().activo !== true && categoriaId !== categoriaAnterior)) {
+    throw new Error("La categoría no existe o está inactiva. Actualiza la lista.");
+  }
+}
+
+async function crearProducto(datos, productoId = generarIdProducto()) {
   const producto = validarDatosProducto(datos);
   const stock = Number(datos.stock_actual);
-
-  if (!Number.isFinite(stock) || stock < 0) {
-    throw new Error("El stock debe ser un número mayor o igual a cero.");
-  }
-
-  return db.collection("productos").add({
-    ...producto,
-    stock_actual: stock,
-    activo: true,
-    created_at: firebase.firestore.FieldValue.serverTimestamp()
+  if (!Number.isFinite(stock) || stock < 0) throw new Error("El stock debe ser un número mayor o igual a cero.");
+  const ref = db.collection("productos").doc(productoId);
+  await db.runTransaction(async transaccion => {
+    const existente = await transaccion.get(ref);
+    if (existente.exists) {
+      // El mismo formulario conserva su identificador ante una respuesta perdida.
+      const anterior = existente.data();
+      if (Object.entries(producto).every(([clave, valor]) => anterior[clave] === valor)) return;
+      throw new Error("El producto con este identificador ya existe. Revisa la tabla antes de reintentar.");
+    }
+    await validarCategoriaAsignada(transaccion, producto.categoria_id);
+    transaccion.set(ref, { ...producto, stock_actual: stock, activo: true,
+      created_at: firebase.firestore.FieldValue.serverTimestamp() });
   });
+  return ref;
 }
 
 async function actualizarProducto(id, datos) {
-  const producto = validarDatosProducto(datos);
-
-  await db.collection("productos").doc(id).update({
-    ...producto,
-    updated_at: firebase.firestore.FieldValue.serverTimestamp()
+  const ref = db.collection("productos").doc(id);
+  await db.runTransaction(async transaccion => {
+    const actual = await transaccion.get(ref);
+    if (!actual.exists) throw new Error("El producto ya no existe.");
+    const producto = validarDatosProducto({ ...actual.data(), ...datos });
+    await validarCategoriaAsignada(transaccion, producto.categoria_id, actual.data().categoria_id ?? null);
+    transaccion.update(ref, { ...producto, updated_at: firebase.firestore.FieldValue.serverTimestamp() });
   });
+}
+
+async function listarProductosAdmin() {
+  const resultado = await db.collection("productos").get();
+  return resultado.docs.map(doc => ({ ...doc.data(), id: doc.id }))
+    .sort((a,b) => a.nombre.localeCompare(b.nombre, "es"));
+}
+
+async function listarCategorias() {
+  const resultado = await db.collection("categorias").get();
+  return resultado.docs.map(doc => ({ ...doc.data(), id: doc.id }))
+    .sort((a,b) => a.nombre.localeCompare(b.nombre, "es"));
+}
+
+function claveCategoria(nombre) {
+  return nombre.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+async function guardarCategoria(id, nombre, activo = true) {
+  const limpio = nombre.trim();
+  if (!limpio || limpio.length > 100 || !claveCategoria(limpio)) throw new Error("Escribe un nombre de categoría válido (1 a 100 caracteres).");
+  if (typeof activo !== "boolean") throw new Error("El estado debe ser booleano.");
+  const creando = !id;
+  const ref = db.collection("categorias").doc(id || claveCategoria(limpio));
+  await db.runTransaction(async transaccion => {
+    const actual = await transaccion.get(ref);
+    const fecha = firebase.firestore.FieldValue.serverTimestamp();
+    if (creando && actual.exists) throw new Error("Esa categoría ya existe. Edítala o reactívala en la lista.");
+    if (!creando && !actual.exists) throw new Error("La categoría ya no existe.");
+    if (creando) transaccion.set(ref, { nombre: limpio, activo, created_at: fecha, updated_at: fecha });
+    else transaccion.update(ref, { nombre: limpio, activo, updated_at: fecha });
+  });
+  return ref.id;
 }
 
 async function registrarMovimientoStock(
@@ -1123,4 +1193,22 @@ async function crearUsuarioDesdeAdmin(datos) {
     try { await authSecundaria.signOut(); } catch (error) { console.error(error); }
     try { await secundaria.delete(); } catch (error) { console.error(error); }
   }
+}
+
+
+async function cambiarCategoriaActiva(id, activo) {
+  if (typeof activo !== "boolean") throw new Error("El estado debe ser booleano.");
+  await db.collection("categorias").doc(id).update({ activo,
+    updated_at: firebase.firestore.FieldValue.serverTimestamp() });
+}
+
+function filtrarProductosCatalogo(productos, busqueda = "", categoriaId = "") {
+  const normalizar = texto => String(texto ?? "").normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+  const termino = normalizar(busqueda);
+  return productos.filter(producto =>
+    normalizar(`${producto.nombre} ${producto.descripcion ?? ""}`).includes(termino)
+    && (!categoriaId || (categoriaId === "__sin_categoria__"
+      ? !producto.categoria_id : producto.categoria_id === categoriaId))
+  );
 }

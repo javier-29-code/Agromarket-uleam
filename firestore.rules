@@ -518,6 +518,25 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    match /categorias/{categoriaId} {
+      allow read: if usuarioActivo();
+      allow create: if esAdministrador()
+        && request.resource.data.keys().hasAll(["nombre", "activo", "created_at", "updated_at"])
+        && request.resource.data.keys().hasOnly(["nombre", "activo", "created_at", "updated_at"])
+        && request.resource.data.nombre is string
+        && request.resource.data.nombre.size() > 0 && request.resource.data.nombre.size() <= 100
+        && request.resource.data.activo is bool
+        && request.resource.data.created_at == request.time
+        && request.resource.data.updated_at == request.time;
+      allow update: if esAdministrador()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["nombre", "activo", "updated_at"])
+        && request.resource.data.nombre is string
+        && request.resource.data.nombre.size() > 0 && request.resource.data.nombre.size() <= 100
+        && request.resource.data.activo is bool
+        && request.resource.data.updated_at == request.time;
+      allow delete: if false;
+    }
+
     match /productos/{productoId} {
       allow read: if usuarioActivo();
 

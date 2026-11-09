@@ -6,128 +6,94 @@
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <link rel="stylesheet" href="css/style.css">
 </head><body>
-<nav class="navbar navbar-expand-lg navbar-dark" style="background-color:#1B5E20">
-  <div class="container">
-    <a class="navbar-brand fw-bold" href="catalogo.html">🌱 Agro Market ULEAM</a>
-    <div class="navbar-nav ms-auto">
-      <a class="nav-link text-white" href="mis-pedidos.html">
-        <i class="bi bi-bag-check"></i> Mis Pedidos</a>
-
-        <a class="nav-link text-white" href="carrito.html">
-          <i class="bi bi-cart"></i> Carrito
-        </a>
-      <span class="nav-link text-white">
-        <i class="bi bi-person-circle"></i> <span id="usuario-nombre"></span></span>
-      <a class="nav-link text-white" href="#" onclick="cerrarSesion()">
-        <i class="bi bi-box-arrow-right"></i> Salir</a>
-    </div>
+<nav class="navbar navbar-dark bg-success"><div class="container">
+  <a class="navbar-brand fw-bold" href="catalogo.html">🌱 Agro Market ULEAM</a>
+  <div class="d-flex flex-wrap align-items-center gap-3">
+    <a class="text-white" href="mis-pedidos.html">Mis pedidos</a><a class="text-white" href="carrito.html">Carrito</a>
+    <span id="usuario-nombre" class="text-white"></span><button type="button" class="btn btn-sm btn-outline-light" onclick="cerrarSesion()">Salir</button>
   </div>
-</nav>
-<div class="container py-4">
-  <h4 class="fw-bold text-success mb-4">🛒 Catálogo de Productos</h4>
-
-  <!-- Búsqueda básica -->
-  <div class="mb-4">
-    <input type="text" id="busqueda" class="form-control" style="max-width:350px"
-           placeholder="Buscar producto..." oninput="filtrar()">
+</div></nav>
+<main class="container py-4">
+  <h1 class="h4 fw-bold text-success mb-4">Catálogo de productos</h1>
+  <div class="row g-3 mb-3">
+    <div class="col-md-6"><label for="busqueda" class="form-label">Buscar producto</label><input type="search" id="busqueda" class="form-control" placeholder="Nombre o descripción"></div>
+    <div class="col-md-4"><label for="filtro-categoria" class="form-label">Categoría</label><select id="filtro-categoria" class="form-select"><option value="">Todas las categorías</option></select></div>
+    <div class="col-md-2 d-flex align-items-end"><button type="button" id="actualizar-catalogo" class="btn btn-outline-success w-100">Actualizar</button></div>
   </div>
-
-  <!-- Grid de productos -->
-  <div id="productos-grid" class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3">
-    <div class="col-12 text-center py-5">
-      <div class="spinner-border text-success"></div>
-      <p class="text-muted mt-2">Cargando productos...</p>
-    </div>
-  </div>
-</div>
-
-  <script src="js/firebase-config.js"></script>
-  <script src="js/auth.js"></script>
-  <script src="js/db.js"></script>
-  <script src="js/carrito.js"></script>
+  <p id="resultado-filtro" class="text-muted small" role="status"></p>
+  <div id="catalogo-error" class="alert alert-danger d-none" role="alert"></div>
+  <div id="productos-grid" class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3" aria-live="polite"><p>Cargando productos...</p></div>
+</main>
+<script src="js/firebase-config.js"></script><script src="js/auth.js"></script><script src="js/db.js"></script><script src="js/carrito.js"></script>
 <script>
-  // MOO: POLIMORFISMO — protegerPagina actúa según el rol
-  protegerPagina(["cliente", "administrador"]);
-
   let todosLosProductos = [];
-
-  async function iniciarPagina() {
-    cargarNavbar();
-    todosLosProductos = await listarProductos();
-    renderProductos(todosLosProductos);
+  let categorias = [];
+  let cargando = false;
+  const productosAgregandose = new Set();
+  function nodo(tag, clase = "", texto = "") { const el = document.createElement(tag); el.className = clase; el.textContent = texto; return el; }
+  async function iniciarPagina() { await cargarNavbar(); await cargarCatalogo(); }
+  async function cargarCatalogo() {
+    if (cargando) return;
+    cargando = true; document.getElementById("actualizar-catalogo").disabled = true;
+    const aviso = document.getElementById("catalogo-error"); aviso.classList.add("d-none");
+    try {
+      const resultados = await Promise.all([listarProductos(), listarCategorias()]);
+      todosLosProductos = resultados[0].sort((a,b) => a.nombre.localeCompare(b.nombre, "es"));
+      categorias = resultados[1];
+      const selector = document.getElementById("filtro-categoria");
+      const anterior = selector.value; selector.replaceChildren();
+      for (const [valor,texto] of [["", "Todas las categorías"], ["__sin_categoria__", "Sin categoría"], ...categorias.filter(c => c.activo).map(c => [c.id, c.nombre])]) {
+        const opcion = nodo("option", "", texto); opcion.value = valor; selector.append(opcion);
+      }
+      if ([...selector.options].some(opcion => opcion.value === anterior)) selector.value = anterior;
+      filtrar();
+    } catch (error) {
+      console.error("Error al cargar el catálogo:", error);
+      aviso.textContent = "No se pudo actualizar el catálogo. Revisa tu conexión y permisos y pulsa Actualizar.";
+      aviso.classList.remove("d-none");
+      if (!todosLosProductos.length) document.getElementById("productos-grid").replaceChildren();
+    } finally { cargando = false; document.getElementById("actualizar-catalogo").disabled = false; }
   }
-
   function filtrar() {
-    const busqueda = document.getElementById("busqueda").value.toLowerCase();
-    const filtrados = todosLosProductos.filter(p =>
-      p.nombre.toLowerCase().includes(busqueda)
-    );
-    renderProductos(filtrados);
+    renderProductos(filtrarProductosCatalogo(todosLosProductos, document.getElementById("busqueda").value, document.getElementById("filtro-categoria").value));
   }
-
   function renderProductos(productos) {
-    const grid = document.getElementById("productos-grid");
-
-    if (productos.length === 0) {
-      grid.innerHTML = `<div class="col-12 text-center py-5">
-        <p class="text-muted">No se encontraron productos.</p></div>`;
-      return;
+    const grid = document.getElementById("productos-grid"); grid.replaceChildren();
+    document.getElementById("resultado-filtro").textContent = `${productos.length} producto${productos.length === 1 ? "" : "s"}`;
+    if (!productos.length) { grid.append(nodo("p", "text-muted", "No se encontraron productos.")); return; }
+    const nombresCategorias = new Map(categorias.map(c => [c.id, c.nombre]));
+    for (const p of productos) {
+      const col = nodo("div", "col"); const tarjeta = nodo("article", "card h-100 shadow-sm border-0");
+      const visual = nodo("div", "bg-light d-flex align-items-center justify-content-center rounded-top"); visual.style.height = "170px";
+      const respaldo = () => { visual.replaceChildren(nodo("span", "fs-1", "🌿")); };
+      if (esURLImagenCloudinaryValida(p.imagen_url)) {
+        const imagen = document.createElement("img"); imagen.src = p.imagen_url; imagen.alt = p.nombre; imagen.loading = "lazy";
+        imagen.className = "w-100 h-100 rounded-top"; imagen.style.objectFit = "cover";
+        imagen.addEventListener("error", respaldo, { once: true }); visual.append(imagen);
+      } else respaldo();
+      const cuerpo = nodo("div", "card-body p-3");
+      cuerpo.append(nodo("small", "text-muted", nombresCategorias.get(p.categoria_id) || "Sin categoría"), nodo("h2", "h6 fw-bold mt-1", p.nombre));
+      if (p.descripcion) cuerpo.append(nodo("p", "small text-muted mb-2", p.descripcion));
+      cuerpo.append(nodo("p", "text-success fw-bold mb-1", `${fmt(p.precio)} / ${p.unidad || "unidad"}`), nodo("small", "text-muted", `Stock: ${p.stock_actual ?? 0}`));
+      const pie = nodo("div", "card-footer bg-white border-0 p-3 pt-0");
+      const boton = nodo("button", `btn btn-${(p.stock_actual ?? 0) > 0 ? "success" : "secondary"} btn-sm w-100`, (p.stock_actual ?? 0) > 0 ? "Agregar al carrito" : "Sin stock");
+      boton.type = "button"; boton.disabled = (p.stock_actual ?? 0) <= 0 || productosAgregandose.has(p.id);
+      boton.addEventListener("click", () => agregarAlCarrito(p.id, boton));
+      pie.append(boton); tarjeta.append(visual,cuerpo,pie); col.append(tarjeta); grid.append(col);
     }
-
-    grid.innerHTML = productos.map(p => `
-      <div class="col">
-        <div class="card h-100 shadow-sm border-0">
-          ${p.imagen_url
-            ? `<img src="${p.imagen_url}" class="card-img-top producto-img">`
-            : `<div class="producto-img bg-light d-flex align-items-center
-                         justify-content-center fs-1">🌿</div>`}
-          <div class="card-body p-2">
-            <h6 class="fw-bold mb-1">${p.nombre}</h6>
-            <div class="d-flex justify-content-between align-items-center">
-              <span class="text-success fw-bold">${fmt(p.precio)}</span>
-              <small class="text-muted">/${p.unidad || "unidad"}</small>
-            </div>
-            <small class="text-muted">Stock: ${p.stock_actual ?? 0}</small>
-          </div>
-          <div class="card-footer bg-white border-0 p-2">
-            ${(p.stock_actual ?? 0) > 0
-              ? `<button class="btn btn-success btn-sm w-100"
-                  onclick="agregarAlCarrito('${p.id}')"
-                  <i class="bi bi-cart-plus"></i> Agregar</button>`
-              : `<button class="btn btn-secondary btn-sm w-100" disabled>Sin stock</button>`
-            }
-          </div>
-        </div>
-      </div>`).join("");
   }
-
-  // Carrito simple en localStorage
-const productosAgregandose = new Set();
-
-async function agregarAlCarrito(id) {
-  if (productosAgregandose.has(id)) return;
-
-  productosAgregandose.add(id);
-
-  try {
-    const nombre = await agregarProductoAlCarrito(id);
-    mostrarToast(`${nombre} agregado al carrito.`);
-  } catch (error) {
-    console.error("Error al agregar al carrito:", error);
-
-    mostrarToast(
-      error.code
-        ? "No se pudo agregar el producto. Revisa tu conexión y permisos."
-        : error.message,
-      "danger"
-    );
-  } finally {
-    productosAgregandose.delete(id);
+  async function agregarAlCarrito(id, boton) {
+    if (productosAgregandose.has(id)) return;
+    productosAgregandose.add(id); boton.disabled = true;
+    try { const nombre = await agregarProductoAlCarrito(id); mostrarToast(`${nombre} agregado al carrito.`); }
+    catch (error) { console.error(error); mostrarToast(error.code ? "No se pudo agregar el producto. Revisa tu conexión y permisos." : error.message, "danger"); }
+    finally { productosAgregandose.delete(id); filtrar(); }
   }
-}
+  document.getElementById("busqueda").addEventListener("input", filtrar);
+  document.getElementById("filtro-categoria").addEventListener("change", filtrar);
+  document.getElementById("actualizar-catalogo").addEventListener("click", cargarCatalogo);
+  protegerPagina(["cliente", "administrador"]);
 </script>
 </body></html>
