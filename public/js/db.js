@@ -1212,3 +1212,60 @@ function filtrarProductosCatalogo(productos, busqueda = "", categoriaId = "") {
       ? !producto.categoria_id : producto.categoria_id === categoriaId))
   );
 }
+
+// Gestión administrativa de zonas. Se conserva el esquema nombre/tarifa/activo.
+function validarDatosZonaDelivery(datos) {
+  if (typeof datos.nombre !== "string" || !datos.nombre.trim() || datos.nombre.trim().length > 100) {
+    throw new Error("Escribe un nombre de zona de entre 1 y 100 caracteres.");
+  }
+  if ((typeof datos.tarifa !== "string" && typeof datos.tarifa !== "number")
+    || (typeof datos.tarifa === "string" && !datos.tarifa.trim())) {
+    throw new Error("Ingresa la tarifa de entrega.");
+  }
+  const tarifa = Number(datos.tarifa);
+  const centavos = Math.round(tarifa * 100);
+  if (!Number.isFinite(tarifa) || tarifa < 0 || tarifa > 100
+    || !Number.isSafeInteger(centavos) || Math.abs(tarifa * 100 - centavos) > 0.000001) {
+    throw new Error("La tarifa debe estar entre $0.00 y $100.00, con hasta dos decimales.");
+  }
+  if (typeof datos.activo !== "boolean") throw new Error("El estado de la zona debe ser booleano.");
+  return { nombre: datos.nombre.trim(), tarifa: centavos / 100, activo: datos.activo };
+}
+
+function generarIdZonaDelivery() { return db.collection("zonas_delivery").doc().id; }
+
+async function listarZonasDeliveryAdmin() {
+  const resultado = await db.collection("zonas_delivery").get();
+  return resultado.docs.map(doc => ({ ...doc.data(), id: doc.id }))
+    .sort((a,b) => a.nombre.localeCompare(b.nombre, "es"));
+}
+
+async function crearZonaDelivery(datos, id = generarIdZonaDelivery()) {
+  const zona = validarDatosZonaDelivery(datos);
+  const ref = db.collection("zonas_delivery").doc(id);
+  await db.runTransaction(async transaccion => {
+    const existente = await transaccion.get(ref);
+    if (existente.exists) {
+      const anterior = existente.data();
+      if (Object.entries(zona).every(([campo, valor]) => anterior[campo] === valor)) return;
+      throw new Error("Esta zona ya fue creada. Actualiza la lista y utiliza Editar.");
+    }
+    transaccion.set(ref, zona);
+  });
+  return ref.id;
+}
+
+async function actualizarZonaDelivery(id, datos) {
+  const zona = validarDatosZonaDelivery(datos);
+  const ref = db.collection("zonas_delivery").doc(id);
+  await db.runTransaction(async transaccion => {
+    const actual = await transaccion.get(ref);
+    if (!actual.exists) throw new Error("La zona ya no existe. Actualiza la lista.");
+    transaccion.update(ref, zona);
+  });
+}
+
+async function cambiarZonaDeliveryActiva(id, activo) {
+  if (typeof activo !== "boolean") throw new Error("El estado debe ser booleano.");
+  await db.collection("zonas_delivery").doc(id).update({ activo });
+}

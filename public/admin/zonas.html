@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="es"><head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Zonas de delivery — Admin</title>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="../css/style.css">
+</head><body>
+<nav class="navbar navbar-dark bg-success"><div class="container-fluid">
+  <a class="navbar-brand fw-bold" href="dashboard.html">Admin — Agro Market</a>
+  <div class="d-flex flex-wrap align-items-center gap-3">
+    <a class="text-white" href="productos.html">Productos</a><a class="text-white" href="pedidos.html">Pedidos</a>
+    <a class="text-white" href="categorias.html">Categorías</a><a class="text-white" href="zonas.html">Zonas</a>
+    <a class="text-white" href="usuarios.html">Usuarios</a><button type="button" class="btn btn-sm btn-outline-light" onclick="cerrarSesion()">Salir</button>
+  </div>
+</div></nav>
+<main class="container py-4">
+  <h1 class="h4 fw-bold text-success">Zonas de delivery</h1>
+  <p class="text-muted">Configura las zonas donde se puede entregar y la tarifa de envío de cada una.</p>
+  <form id="form-zona" class="card card-body mb-4" style="max-width:650px">
+    <h2 id="titulo-formulario" class="h5">Nueva zona</h2>
+    <div class="row g-3">
+      <div class="col-md-8"><label for="zona-nombre" class="form-label">Nombre de la zona</label><input id="zona-nombre" class="form-control" maxlength="100" placeholder="Ej.: Bloque A" required></div>
+      <div class="col-md-4"><label for="zona-tarifa" class="form-label">Tarifa de envío</label><div class="input-group"><span class="input-group-text">$</span><input id="zona-tarifa" type="number" class="form-control" min="0" max="100" step="0.01" required></div></div>
+    </div>
+    <label class="my-3"><input id="zona-activo" type="checkbox" class="form-check-input" checked> Disponible para nuevos pedidos</label>
+    <div class="d-flex gap-2"><button id="guardar" type="submit" class="btn btn-success">Guardar zona</button><button id="limpiar" type="button" class="btn btn-outline-secondary">Limpiar formulario</button></div>
+    <div id="zona-error" class="alert alert-danger d-none mt-3 mb-0" role="alert"></div>
+  </form>
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <h2 class="h5 mb-0">Zonas registradas</h2><button id="actualizar" type="button" class="btn btn-outline-success btn-sm">Actualizar</button>
+  </div>
+  <p class="text-muted small">Los cambios se aplican a las próximas compras. Los pedidos registrados conservan su zona y tarifa.</p>
+  <div id="lista-zonas" class="table-responsive" aria-live="polite">Cargando zonas...</div>
+</main>
+<script src="../js/firebase-config.js"></script><script src="../js/auth.js"></script><script src="../js/db.js"></script>
+<script>
+  let zonaEnEdicion = null;
+  let nuevaZonaId = null;
+  let ocupado = false;
+  const elemento = id => document.getElementById(id);
+  function limpiarZona() {
+    zonaEnEdicion = null;
+    nuevaZonaId = generarIdZonaDelivery();
+    elemento("form-zona").reset();
+    elemento("titulo-formulario").textContent = "Nueva zona";
+    elemento("guardar").textContent = "Guardar zona";
+    elemento("zona-error").classList.add("d-none");
+  }
+  function bloquear(valor) { document.querySelectorAll("main input, main button").forEach(control => { control.disabled = valor; }); }
+  async function iniciarPagina() { limpiarZona(); await cargarZonas(); }
+  async function cargarZonas() {
+    if (ocupado) return;
+    ocupado = true; bloquear(true);
+    const lista = elemento("lista-zonas");
+    try {
+      const zonas = await listarZonasDeliveryAdmin(); lista.replaceChildren();
+      if (!zonas.length) { lista.textContent = "No hay zonas. Crea la primera con el formulario."; return; }
+      const tabla = document.createElement("table"); tabla.className = "table align-middle";
+      const encabezado = tabla.createTHead().insertRow();
+      for (const texto of ["Zona", "Tarifa", "Disponibilidad", "Acciones"]) {
+        const celda = document.createElement("th"); celda.textContent = texto; encabezado.append(celda);
+      }
+      const cuerpo = tabla.createTBody();
+      for (const zona of zonas) {
+        const fila = cuerpo.insertRow(); fila.insertCell().textContent = zona.nombre;
+        fila.insertCell().textContent = fmt(zona.tarifa); fila.insertCell().textContent = zona.activo ? "Activa" : "Inactiva";
+        const acciones = fila.insertCell();
+        const editar = document.createElement("button"); editar.type = "button"; editar.className = "btn btn-outline-primary btn-sm me-2"; editar.textContent = "Editar";
+        editar.addEventListener("click", () => {
+          zonaEnEdicion = zona.id;
+          elemento("zona-nombre").value = zona.nombre; elemento("zona-tarifa").value = Number(zona.tarifa).toFixed(2);
+          elemento("zona-activo").checked = zona.activo === true;
+          elemento("titulo-formulario").textContent = "Editar zona"; elemento("guardar").textContent = "Guardar cambios";
+          elemento("zona-error").classList.add("d-none"); elemento("zona-nombre").focus();
+        });
+        const alternar = document.createElement("button"); alternar.type = "button"; alternar.className = "btn btn-outline-secondary btn-sm"; alternar.textContent = zona.activo ? "Desactivar" : "Reactivar";
+        alternar.addEventListener("click", () => ejecutar(() => cambiarZonaDeliveryActiva(zona.id, !zona.activo)));
+        acciones.append(editar, alternar);
+      }
+      lista.append(tabla);
+    } catch (error) {
+      console.error("Error al cargar zonas:", error);
+      lista.textContent = "No se pudieron cargar las zonas. Revisa la consola y pulsa Actualizar.";
+    } finally { ocupado = false; bloquear(false); }
+  }
+  async function ejecutar(operacion) {
+    if (ocupado) return;
+    ocupado = true; bloquear(true); elemento("zona-error").classList.add("d-none");
+    let guardado = false;
+    try { await operacion(); guardado = true; limpiarZona(); mostrarToast("Zona guardada."); }
+    catch (error) {
+      console.error("Error al guardar zona:", error);
+      elemento("zona-error").textContent = error.code ? "No se pudo guardar. Revisa tu conexión y permisos." : error.message;
+      elemento("zona-error").classList.remove("d-none");
+    } finally {
+      ocupado = false; bloquear(false);
+      if (guardado) await cargarZonas();
+    }
+  }
+  elemento("form-zona").addEventListener("submit", evento => {
+    evento.preventDefault();
+    if (ocupado) return;
+    const datos = { nombre: elemento("zona-nombre").value, tarifa: elemento("zona-tarifa").value, activo: elemento("zona-activo").checked };
+    if (zonaEnEdicion) ejecutar(() => actualizarZonaDelivery(zonaEnEdicion, datos));
+    else { nuevaZonaId ||= generarIdZonaDelivery(); ejecutar(() => crearZonaDelivery(datos, nuevaZonaId)); }
+  });
+  elemento("limpiar").addEventListener("click", limpiarZona);
+  elemento("actualizar").addEventListener("click", cargarZonas);
+  protegerPagina(["administrador"]);
+</script>
+</body></html>
