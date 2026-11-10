@@ -86,7 +86,7 @@
     let confirmandoPedido = false;
     let intentoCompra = null;
     let zonasDelivery = [];
-    const pedidoConfirmacionId = db.collection("pedidos").doc().id;
+    const pedidoConfirmacionId = generarIdPedido();
     const porId = id => document.getElementById(id);
 
     function actualizarPago() {
@@ -180,15 +180,18 @@
       let pedidoCreado = false;
       try {
         if (!intentoCompra) {
+          const contexto = resumenPedido.contexto_carrito;
+          verificarContextoCarrito(contexto);
           const entrega = obtenerEntrega();
           const formaPago = porId("forma-pago").value;
           const archivo = formaPago === "transferencia" ? porId("comprobante-pago").files[0] : null;
           if (formaPago === "transferencia") await validarArchivoComprobante(archivo);
+          verificarContextoCarrito(contexto);
           intentoCompra = { formaPago, archivo, comprobanteSubido: null,
             carrito: resumenPedido.detalles.map(detalle => ({ productoId: detalle.producto_id, cantidad: detalle.cantidad })),
             notas: notas.value, entrega,
-            clave: claveCarritoActual(),
-            contenidoOriginal: JSON.stringify(obtenerCarrito())
+            clave: contexto.clave,
+            firmaComprada: contexto.firma
           };
         }
         if (claveCarritoActual() !== intentoCompra.clave) throw new Error("La sesión cambió. Recarga la página.");
@@ -211,9 +214,7 @@
         pedidoCreado = true;
         let avisoCarrito = "";
         try {
-          const actual = localStorage.getItem(intentoCompra.clave);
-          if (actual === intentoCompra.contenidoOriginal || actual === null) localStorage.removeItem(intentoCompra.clave);
-          else avisoCarrito = " El carrito cambió en otra pestaña y se conservó; revísalo.";
+          if (!limpiarCarritoComprado(intentoCompra.clave, intentoCompra.firmaComprada)) avisoCarrito = " El carrito cambió en otra pestaña y se conservó; revísalo.";
         } catch (error) {
           console.error("No se pudo limpiar el carrito:", error);
           avisoCarrito = " Revisa el carrito antes de realizar otra compra.";

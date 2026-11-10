@@ -46,8 +46,10 @@ function guardarCarrito(carrito) {
 }
 
 async function agregarProductoAlCarrito(productoId) {
+  const claveInicial = claveCarritoActual();
   // Consultar los datos actuales del producto.
   const producto = await obtenerProducto(productoId);
+  if (claveCarritoActual() !== claveInicial) throw new Error("La sesión cambió. Recarga la página.");
 
   if (!producto || producto.activo !== true) {
     throw new Error("Este producto ya no está disponible.");
@@ -65,7 +67,11 @@ async function agregarProductoAlCarrito(productoId) {
     item => item.productoId === productoId
   );
 
+  if (!existente && carrito.length >= LIMITES_COMPRA.productos) {
+    throw new Error(`Cada pedido admite hasta ${LIMITES_COMPRA.productos} productos distintos. Finaliza o ajusta tu carrito.`);
+  }
   const nuevaCantidad = (existente?.cantidad ?? 0) + 1;
+  if (nuevaCantidad > LIMITES_COMPRA.cantidadPorProducto) throw new Error(`La cantidad máxima por producto es ${LIMITES_COMPRA.cantidadPorProducto}.`);
 
   if (nuevaCantidad > stock) {
     throw new Error(`Stock insuficiente. Disponible: ${stock}.`);
@@ -84,8 +90,8 @@ async function agregarProductoAlCarrito(productoId) {
 async function cambiarCantidadCarrito(productoId, cantidad) {
   const nuevaCantidad = Number(cantidad);
 
-  if (!Number.isSafeInteger(nuevaCantidad) || nuevaCantidad < 1) {
-    throw new Error("Ingresa una cantidad entera mayor que cero.");
+  if (!Number.isSafeInteger(nuevaCantidad) || nuevaCantidad < 1 || nuevaCantidad > LIMITES_COMPRA.cantidadPorProducto) {
+    throw new Error(`Ingresa una cantidad entera entre 1 y ${LIMITES_COMPRA.cantidadPorProducto}.`);
   }
 
   const claveInicial = claveCarritoActual();
@@ -126,6 +132,28 @@ function quitarProductoCarrito(productoId) {
   guardarCarrito(carrito);
 }
 
+function firmaCarrito(carrito) {
+  return JSON.stringify(carrito.map(item => ({ productoId: item.productoId, cantidad: item.cantidad }))
+    .sort((a,b) => a.productoId.localeCompare(b.productoId)));
+}
+
+function verificarContextoCarrito(contexto) {
+  if (!contexto || claveCarritoActual() !== contexto.clave) throw new Error("La sesión cambió. Recarga la página.");
+  if (firmaCarrito(obtenerCarrito()) !== contexto.firma) throw new Error("El carrito cambió en otra pestaña. Recarga y revisa el pedido antes de confirmar.");
+}
+
+function limpiarCarritoComprado(clave, firmaComprada) {
+  const contenido = localStorage.getItem(clave);
+  if (contenido === null) return true;
+  let carrito;
+  try { carrito = JSON.parse(contenido); }
+  catch { return false; }
+  if (!Array.isArray(carrito) || !carrito.every(item => item && typeof item.productoId === "string" && Number.isSafeInteger(item.cantidad))) return false;
+  if (firmaCarrito(carrito) !== firmaComprada) return false;
+  localStorage.removeItem(clave);
+  return true;
+}
+
 async function prepararResumenPedido() {
   const claveInicial = claveCarritoActual();
   const carrito = obtenerCarrito();
@@ -134,6 +162,9 @@ async function prepararResumenPedido() {
     throw new Error("El carrito está vacío.");
   }
 
+  if (carrito.length > LIMITES_COMPRA.productos) throw new Error(`El pedido admite hasta ${LIMITES_COMPRA.productos} productos distintos. Quita los productos adicionales del carrito.`);
+  if (carrito.some(item => item.cantidad > LIMITES_COMPRA.cantidadPorProducto)) throw new Error(`La cantidad máxima por producto es ${LIMITES_COMPRA.cantidadPorProducto}.`);
+  const firmaInicial = firmaCarrito(carrito);
   const productos = await Promise.all(
     carrito.map(item => obtenerProducto(item.productoId))
   );
@@ -142,6 +173,7 @@ async function prepararResumenPedido() {
     throw new Error("La sesión cambió. Recarga la página.");
   }
 
+  if (firmaCarrito(obtenerCarrito()) !== firmaInicial) throw new Error("El carrito cambió mientras se consultaban los productos. Recarga para revisarlo.");
   let totalCentavos = 0;
 
   const detalles = carrito.map((item, indice) => {
@@ -194,6 +226,7 @@ async function prepararResumenPedido() {
 
   return {
     detalles,
+    contexto_carrito: { clave: claveInicial, firma: firmaInicial },
     subtotal: totalCentavos / 100,
     tarifa_envio: 0,
     total: totalCentavos / 100

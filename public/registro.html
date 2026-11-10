@@ -15,27 +15,28 @@
     <h4 class="fw-bold text-success text-center mb-1">Crear cuenta</h4>
     <p class="text-center text-muted small mb-3">Solo estudiantes y docentes ULEAM</p>
     <div id="error-msg" class="alert alert-danger d-none"></div>
-    <div class="row g-2 mb-3">
+    <form id="form-registro"><div class="row g-2 mb-3">
       <div class="col-6">
-        <label class="form-label">Nombre *</label>
-        <input type="text" id="nombre" class="form-control">
+        <label for="nombre" class="form-label">Nombre *</label>
+        <input type="text" id="nombre" class="form-control" maxlength="100" required>
       </div>
       <div class="col-6">
-        <label class="form-label">Apellido *</label>
-        <input type="text" id="apellido" class="form-control">
+        <label for="apellido" class="form-label">Apellido *</label>
+        <input type="text" id="apellido" class="form-control" maxlength="100" required>
       </div>
     </div>
     <div class="mb-3">
-      <input type="email" id="correo" class="form-control">
+      <label for="correo" class="form-label">Correo institucional *</label>
+      <input type="email" id="correo" class="form-control" required>
     </div>
     <div class="mb-3">
-      <label class="form-label">Contraseña * (mínimo 6 caracteres)</label>
-      <input type="password" id="password" class="form-control">
+      <label for="password" class="form-label">Contraseña * (mínimo 6 caracteres)</label>
+      <input type="password" id="password" class="form-control" minlength="6" required autocomplete="new-password">
     </div>
-    <button class="btn btn-success w-100 fw-bold" onclick="registrar()">
-      <i class="bi bi-person-plus"></i> Registrarme
+    <button class="btn btn-success w-100 fw-bold" type="submit" id="registrar">
+      <i class="bi bi-person-plus"></i> Registrar / completar perfil
     </button>
-    <hr>
+    </form><hr>
     <p class="text-center mb-0 small">¿Ya tienes cuenta?
       <a href="login.html" class="text-success fw-bold">Inicia sesión</a></p>
   </div>
@@ -44,33 +45,24 @@
   <script src="js/auth.js"></script>
   <script src="js/db.js"></script>
 <script>
-  async function registrar() {
-    const nombre   = document.getElementById("nombre").value.trim();
-    const apellido = document.getElementById("apellido").value.trim();
-    const correo   = document.getElementById("correo").value.trim().toLowerCase();
-    const password = document.getElementById("password").value;
-    const errEl    = document.getElementById("error-msg");
-    errEl.classList.add("d-none");
-
-    if (!nombre || !apellido || !correo || !password) {
-      errEl.textContent = "Completa todos los campos.";
-      errEl.classList.remove("d-none"); return;
-    }
-    if (!correo.endsWith(DOMINIO)) {
-      errEl.textContent = "Solo se permiten correos " + DOMINIO;
-      errEl.classList.remove("d-none"); return;
-    }
+  let registrando = false;
+  document.getElementById("form-registro").addEventListener("submit", async evento => {
+    evento.preventDefault(); if (registrando) return;
+    const formulario = evento.currentTarget;
+    const aviso = document.getElementById("error-msg");
+    aviso.classList.add("d-none"); registrando = true;
+    formulario.querySelectorAll("input,button").forEach(el => el.disabled = true);
     try {
-      const cred = await auth.createUserWithEmailAndPassword(correo, password);
-      // MOO: HERENCIA — crearUsuarioDB siempre asigna rol "cliente"
-      await crearUsuarioDB(cred.user.uid, { nombre, apellido, correo });
-      window.location.href = "catalogo.html";
-    } catch(e) {
-      if (e.code === "auth/email-already-in-use")
-        errEl.textContent = "Ese correo ya está registrado.";
-      else errEl.textContent = "Error: " + e.message;
-      errEl.classList.remove("d-none");
+      const datos = Object.fromEntries(["nombre","apellido","correo","password"].map(id => [id, document.getElementById(id).value]));
+      const perfil = await registrarClienteSeguro(datos);
+      window.location.href = crearModeloUsuario(perfil).obtenerPaginaInicio();
+    } catch (error) {
+      console.error("Error al registrar:", error);
+      aviso.textContent = error.message; aviso.classList.remove("d-none");
+    } finally {
+      registrando = false;
+      formulario.querySelectorAll("input,button").forEach(el => el.disabled = false);
     }
-  }
+  });
 </script>
 </body></html>

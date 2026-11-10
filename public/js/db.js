@@ -11,6 +11,9 @@
 // Un pedido "entregado" no puede volver a "pendiente".
 // ═══════════════════════════════════════════════════════
 
+// Estos límites deben coincidir con los validados en firestore.rules.
+const LIMITES_COMPRA = Object.freeze({ productos: 5, cantidadPorProducto: 10000 });
+
 // Estado base: define el comportamiento común.
 class EstadoPedido {
   constructor(codigo, siguiente = null) {
@@ -225,8 +228,8 @@ class EstrategiaPago {
   }
 }
 
-// Registra la modalidad de pago; el efectivo se cobra al retirar.
-class PagoEfectivoRetiro extends EstrategiaPago {
+// Modalidad de pago en efectivo, al retirar o recibir el pedido.
+class PagoEfectivo extends EstrategiaPago {
   preparar(totalCentavos) {
     if (
       !Number.isSafeInteger(totalCentavos) ||
@@ -240,6 +243,8 @@ class PagoEfectivoRetiro extends EstrategiaPago {
     };
   }
 }
+
+class PagoEfectivoRetiro extends PagoEfectivo {}
 
 // Configuración pública de subida. Nunca se incluye API Secret en el navegador.
 const CLOUDINARY_COMPROBANTES = Object.freeze({
@@ -342,20 +347,6 @@ async function subirImagenCloudinary(archivo, preset, etiqueta = "imagen") {
 
 // ── USUARIOS ─────────────────────────────────────────
 
-async function crearUsuarioDB(uid, datos) {
-  // Guardar el perfil. En auth.js, el rol permite construir
-  // una instancia de Cliente o Administrador.
-  await db.collection("usuarios").doc(uid).set({
-    nombre:   datos.nombre,
-    apellido: datos.apellido,
-    correo:   datos.correo,
-    rol:      "cliente",   // siempre empieza como cliente
-    activo:   true,
-    created_at: firebase.firestore.FieldValue.serverTimestamp()
-  });
-}
-
-
 // ── PRODUCTOS ────────────────────────────────────────
 
 async function listarProductos() {
@@ -369,24 +360,9 @@ async function obtenerProducto(id) {
   return doc.exists ? { id: doc.id, ...doc.data() } : null;
 }
 
-// TODO: Implementar crearProducto(), actualizarProducto()
 
 
 // ── PEDIDOS ──────────────────────────────────────────
-
-async function crearPedido(datos) {
-  return await db.collection("pedidos").add({
-    ...datos,
-    estado: "pendiente",
-    // Historial append-only — se agrega, nunca se borra
-    historial: [{
-      estado_nuevo: "pendiente",
-      fecha: new Date().toISOString(),
-      nota: "Pedido creado"
-    }],
-    created_at: firebase.firestore.FieldValue.serverTimestamp()
-  });
-}
 
 async function listarPedidosCliente(clienteId) {
   const snap = await db.collection("pedidos")
@@ -462,7 +438,6 @@ async function cambiarEstado(pedidoId, pedido, nuevoEstado, nota = "", repartido
   });
 }
 
-// TODO: Implementar listarTodosPedidos() para el admin
 async function obtenerResumenProductos() {
   const productos = await listarProductos();
 
@@ -698,7 +673,7 @@ async function crearPedidoRetiro(carrito, notas, resumen, id, pago = new PagoEfe
 }
 
 // Efectivo: cobro al recibir, usando el mismo contrato Strategy.
-class PagoEfectivoDelivery extends PagoEfectivoRetiro {}
+class PagoEfectivoDelivery extends PagoEfectivo {}
 
 function validarEntregaCompra(entrega) {
   if (!entrega || !["retiro", "delivery"].includes(entrega.tipo)) {
@@ -735,7 +710,7 @@ async function crearPedidoCompra(
   if (
     !Array.isArray(carrito) ||
     carrito.length < 1 ||
-    carrito.length > 5
+    carrito.length > LIMITES_COMPRA.productos
   ) {
     throw new Error("El pedido admite entre 1 y 5 productos distintos.");
   }
@@ -752,7 +727,7 @@ async function crearPedidoCompra(
       !item.productoId.includes("/") &&
       Number.isSafeInteger(item.cantidad) &&
       item.cantidad >= 1 &&
-      item.cantidad <= 10000
+      item.cantidad <= LIMITES_COMPRA.cantidadPorProducto
     ) ||
     new Set(items.map(item => item.productoId)).size !== items.length
   ) {
@@ -1026,14 +1001,14 @@ async function cancelarPedido(pedidoId, motivo) {
     if (
       !Array.isArray(detalles) ||
       detalles.length < 1 ||
-      detalles.length > 5 ||
+      detalles.length > LIMITES_COMPRA.productos ||
       !detalles.every(detalle =>
         typeof detalle.producto_id === "string" &&
         detalle.producto_id.length > 0 &&
         !detalle.producto_id.includes("/") &&
         Number.isSafeInteger(detalle.cantidad) &&
         detalle.cantidad > 0 &&
-        detalle.cantidad <= 10000
+        detalle.cantidad <= LIMITES_COMPRA.cantidadPorProducto
       ) ||
       new Set(detalles.map(detalle => detalle.producto_id)).size
         !== detalles.length
@@ -1337,4 +1312,141 @@ function escucharPedidosCliente(clienteId, alRecibir, alError) {
         .sort((a,b) => (b.created_at?.toMillis() ?? 0) - (a.created_at?.toMillis() ?? 0));
       alRecibir(pedidos);
     }, alError);
+}
+
+
+// Identificadores y consultas usados por las páginas, sin acceso directo desde HTML.
+function generarIdPedido() { return db.collection("pedidos").doc().id; }
+
+async function obtenerUsuario(uid) {
+  const documento = await db.collection("usuarios").doc(uid).get();
+  return documento.exists ? { ...documento.data(), id: documento.id } : null;
+}
+
+function escucharPerfilUsuario(uid, alRecibir, alError) {
+  return db.collection("usuarios").doc(uid).onSnapshot(documento => {
+    alRecibir(documento.exists ? { ...documento.data(), id: documento.id } : null);
+  }, alError);
+}
+
+async function listarTodosPedidos() {
+  const resultado = await db.collection("pedidos").get();
+  return resultado.docs.map(documento => ({ ...documento.data(), id: documento.id }))
+    .sort((a,b) => (b.created_at?.toMillis() ?? 0) - (a.created_at?.toMillis() ?? 0));
+}
+
+function validarRegistroCliente(datos) {
+  const nombre = typeof datos.nombre === "string" ? datos.nombre.trim() : "";
+  const apellido = typeof datos.apellido === "string" ? datos.apellido.trim() : "";
+  const correo = typeof datos.correo === "string" ? datos.correo.trim().toLowerCase() : "";
+  if (!nombre || nombre.length > 100 || !apellido || apellido.length > 100) {
+    throw new Error("El nombre y el apellido deben tener entre 1 y 100 caracteres cada uno.");
+  }
+  if (!/^[^@\s]+@uleam\.edu\.ec$/.test(correo)) throw new Error("Usa un correo @uleam.edu.ec válido.");
+  if (typeof datos.password !== "string" || datos.password.length < 6) {
+    throw new Error("La contraseña debe tener al menos 6 caracteres y cumplir la política del proyecto.");
+  }
+  return { nombre, apellido, correo, password: datos.password };
+}
+
+async function completarPerfilCliente(usuario, datos) {
+  const ref = db.collection("usuarios").doc(usuario.uid);
+  return db.runTransaction(async transaccion => {
+    const existente = await transaccion.get(ref);
+    if (auth.currentUser?.uid !== usuario.uid || usuario.email?.toLowerCase() !== datos.correo) {
+      throw new Error("La sesión cambió. Vuelve a iniciar sesión.");
+    }
+    if (existente.exists) {
+      const perfil = existente.data();
+      if (perfil.correo !== datos.correo || !["cliente", "administrador", "repartidor"].includes(perfil.rol)) {
+        throw new Error("Tu perfil necesita revisión del administrador.");
+      }
+      if (perfil.activo !== true) throw new Error("Tu cuenta está inactiva. Contacta al administrador.");
+      return { ...perfil, id: ref.id };
+    }
+    const perfil = { nombre: datos.nombre, apellido: datos.apellido, correo: datos.correo,
+      rol: "cliente", activo: true, created_at: firebase.firestore.FieldValue.serverTimestamp() };
+    transaccion.set(ref, perfil);
+    return { ...perfil, id: ref.id };
+  });
+}
+
+async function registrarClienteSeguro(datosFormulario) {
+  const datos = validarRegistroCliente(datosFormulario);
+  let usuario = auth.currentUser;
+  if (!usuario || usuario.email?.toLowerCase() !== datos.correo) {
+    try {
+      usuario = (await auth.createUserWithEmailAndPassword(datos.correo, datos.password)).user;
+    } catch (error) {
+      if (error.code !== "auth/email-already-in-use") throw error;
+      // Si el alta anterior creó Auth pero falló el perfil, comprobar la identidad
+      // permite completarlo sin crear ni eliminar otra cuenta.
+      try { usuario = (await auth.signInWithEmailAndPassword(datos.correo, datos.password)).user; }
+      catch {
+        throw new Error("Ese correo ya está registrado. Usa su contraseña correcta o entra desde Iniciar sesión.");
+      }
+    }
+  }
+  try { return await completarPerfilCliente(usuario, datos); }
+  catch (error) {
+    if (["permission-denied", "unavailable", "deadline-exceeded", "aborted", "unknown"].includes(error.code)) {
+      const recuperable = new Error("La cuenta existe, pero no se pudo completar el perfil. Conserva esta página y pulsa de nuevo Registrar / completar perfil cuando se restablezca la conexión. No necesitas otra cuenta.");
+      recuperable.cause = error;
+      throw recuperable;
+    }
+    throw error;
+  }
+}
+
+async function cambiarEstadoActivoUsuario(uid, activo) {
+  const actor = auth.currentUser;
+  if (!actor) throw new Error("Debes iniciar sesión.");
+  if (typeof activo !== "boolean") throw new Error("El estado debe ser booleano.");
+  if (uid === actor.uid) throw new Error("No puedes desactivar tu propia cuenta.");
+  const actorRef = db.collection("usuarios").doc(actor.uid);
+  const usuarioRef = db.collection("usuarios").doc(uid);
+  return db.runTransaction(async transaccion => {
+    const administradorDoc = await transaccion.get(actorRef);
+    const usuarioDoc = await transaccion.get(usuarioRef);
+    if (!administradorDoc.exists || administradorDoc.data().rol !== "administrador" || administradorDoc.data().activo !== true) {
+      throw new Error("Se requiere un administrador activo.");
+    }
+    if (!usuarioDoc.exists) throw new Error("El perfil ya no existe.");
+    if (!["cliente", "repartidor"].includes(usuarioDoc.data().rol)) {
+      throw new Error("Las cuentas de administración están protegidas en este panel.");
+    }
+    if (auth.currentUser?.uid !== actor.uid) throw new Error("La sesión cambió. Recarga la página.");
+    if (usuarioDoc.data().activo === activo) return false;
+    transaccion.update(usuarioRef, { activo });
+    return true;
+  });
+}
+
+function escucharCatalogo(alRecibir, alError) {
+  const usuario = auth.currentUser;
+  if (!usuario) throw new Error("Debes iniciar sesión.");
+  let productos = null, categorias = null, cancelada = false;
+  let cancelarProductos = () => {}, cancelarCategorias = () => {};
+  function detener() { cancelada = true; cancelarProductos(); cancelarCategorias(); }
+  function emitir() {
+    if (cancelada || auth.currentUser?.uid !== usuario.uid || productos === null || categorias === null) return;
+    alRecibir(productos, categorias);
+  }
+  function fallar(error) {
+    if (cancelada) return;
+    detener();
+    if (auth.currentUser?.uid === usuario.uid) alError(error);
+  }
+  cancelarProductos = db.collection("productos").where("activo", "==", true).onSnapshot(resultado => {
+    productos = resultado.docs.map(documento => ({ ...documento.data(), id: documento.id }))
+      .sort((a,b) => a.nombre.localeCompare(b.nombre, "es"));
+    emitir();
+  }, fallar);
+  if (!cancelada) cancelarCategorias = db.collection("categorias").onSnapshot(resultado => {
+    categorias = resultado.docs.map(documento => ({ ...documento.data(), id: documento.id }))
+      .sort((a,b) => a.nombre.localeCompare(b.nombre, "es"));
+    emitir();
+  }, fallar);
+  if (cancelada) detener();
+  return detener;
 }

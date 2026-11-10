@@ -314,7 +314,14 @@ service cloud.firestore {
         && request.resource.data.created_at == request.time;
 
       allow list: if esAdministrador();
-      allow update, delete: if false;
+      // El administrador gestiona activo de clientes/repartidores; no puede
+      // cambiar roles, correo o el estado de cuentas administrativas.
+      allow update: if esAdministrador()
+        && request.auth.uid != uid
+        && resource.data.rol in ["cliente", "repartidor"]
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["activo"])
+        && request.resource.data.activo is bool;
+      allow delete: if false;
     }
           function avanceRetiroValido() {
       let anterior = resource.data;

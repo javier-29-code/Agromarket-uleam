@@ -22,6 +22,7 @@
     <div class="col-md-4"><label for="filtro-categoria" class="form-label">Categoría</label><select id="filtro-categoria" class="form-select"><option value="">Todas las categorías</option></select></div>
     <div class="col-md-2 d-flex align-items-end"><button type="button" id="actualizar-catalogo" class="btn btn-outline-success w-100">Actualizar</button></div>
   </div>
+  <p class="text-muted small">Stock actualizado en vivo. Máximo 5 productos distintos por pedido.</p>
   <p id="resultado-filtro" class="text-muted small" role="status"></p>
   <div id="catalogo-error" class="alert alert-danger d-none" role="alert"></div>
   <div id="productos-grid" class="row row-cols-2 row-cols-md-3 row-cols-lg-4 g-3" aria-live="polite"><p>Cargando productos...</p></div>
@@ -34,28 +35,33 @@
   const productosAgregandose = new Set();
   function nodo(tag, clase = "", texto = "") { const el = document.createElement(tag); el.className = clase; el.textContent = texto; return el; }
   async function iniciarPagina() { await cargarNavbar(); await cargarCatalogo(); }
-  async function cargarCatalogo() {
-    if (cargando) return;
-    cargando = true; document.getElementById("actualizar-catalogo").disabled = true;
+  let detenerCatalogo = null;
+  function cerrarCatalogo() { detenerCatalogo?.(); detenerCatalogo = null; cargando = false; }
+  function cargarCatalogo() {
+    cerrarCatalogo();
+    cargando = true;
+    const boton = document.getElementById("actualizar-catalogo"); boton.disabled = true;
     const aviso = document.getElementById("catalogo-error"); aviso.classList.add("d-none");
-    try {
-      const resultados = await Promise.all([listarProductos(), listarCategorias()]);
-      todosLosProductos = resultados[0].sort((a,b) => a.nombre.localeCompare(b.nombre, "es"));
-      categorias = resultados[1];
-      const selector = document.getElementById("filtro-categoria");
-      const anterior = selector.value; selector.replaceChildren();
-      for (const [valor,texto] of [["", "Todas las categorías"], ["__sin_categoria__", "Sin categoría"], ...categorias.filter(c => c.activo).map(c => [c.id, c.nombre])]) {
-        const opcion = nodo("option", "", texto); opcion.value = valor; selector.append(opcion);
-      }
-      if ([...selector.options].some(opcion => opcion.value === anterior)) selector.value = anterior;
-      filtrar();
-    } catch (error) {
-      console.error("Error al cargar el catálogo:", error);
+    const fallar = error => {
+      console.error("Error al escuchar el catálogo:", error);
       aviso.textContent = "No se pudo actualizar el catálogo. Revisa tu conexión y permisos y pulsa Actualizar.";
-      aviso.classList.remove("d-none");
-      if (!todosLosProductos.length) document.getElementById("productos-grid").replaceChildren();
-    } finally { cargando = false; document.getElementById("actualizar-catalogo").disabled = false; }
+      aviso.classList.remove("d-none"); cargando = false; boton.disabled = false;
+    };
+    try {
+      detenerCatalogo = escucharCatalogo((productos, nuevasCategorias) => {
+        todosLosProductos = productos; categorias = nuevasCategorias;
+        const selector = document.getElementById("filtro-categoria");
+        const anterior = selector.value; selector.replaceChildren();
+        for (const [valor,texto] of [["", "Todas las categorías"], ["__sin_categoria__", "Sin categoría"], ...categorias.filter(c => c.activo).map(c => [c.id,c.nombre])]) {
+          const opcion = nodo("option", "", texto); opcion.value = valor; selector.append(opcion);
+        }
+        if ([...selector.options].some(opcion => opcion.value === anterior)) selector.value = anterior;
+        filtrar(); cargando = false; boton.disabled = false;
+      }, fallar);
+    } catch (error) { fallar(error); }
   }
+  window.addEventListener("pagehide", cerrarCatalogo);
+  window.addEventListener("pageshow", evento => { if (evento.persisted && auth.currentUser) cargarCatalogo(); });
   function filtrar() {
     renderProductos(filtrarProductosCatalogo(todosLosProductos, document.getElementById("busqueda").value, document.getElementById("filtro-categoria").value));
   }

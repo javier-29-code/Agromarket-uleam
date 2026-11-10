@@ -55,9 +55,10 @@
       Seguir comprando
     </a>
 
-    <a href="checkout.html" class="btn btn-success">
+    <button type="button" id="btn-revisar-pedido" class="btn btn-success" disabled>
       Revisar pedido
-    </a>
+    </button>
+    <p id="carrito-limite" class="text-muted small mt-2"></p>
   </main>
 
   <script src="js/firebase-config.js"></script>
@@ -89,7 +90,14 @@
     }
 
     async function cargarVistaCarrito() {
+      const revisar = document.getElementById("btn-revisar-pedido");
+      revisar.disabled = true;
       const carrito = obtenerCarrito();
+      const limite = document.getElementById("carrito-limite");
+      limite.textContent = carrito.length > LIMITES_COMPRA.productos
+        ? `Hay ${carrito.length} productos distintos. Cada pedido admite ${LIMITES_COMPRA.productos}; quita los adicionales para continuar.`
+        : `Cada pedido admite hasta ${LIMITES_COMPRA.productos} productos distintos.`;
+      limite.className = carrito.length > LIMITES_COMPRA.productos ? "text-danger small mt-2" : "text-muted small mt-2";
 
       const productos = await Promise.all(
         carrito.map(item => obtenerProducto(item.productoId))
@@ -120,7 +128,7 @@
 
       const cuerpo = tabla.createTBody();
       let totalCentavos = 0;
-      let hayProblemas = false;
+      let hayProblemas = carrito.length > LIMITES_COMPRA.productos;
 
       carrito.forEach((item, indice) => {
         const producto = productos[indice];
@@ -136,7 +144,7 @@
           precioValido &&
           typeof producto.stock_actual === "number" &&
           Number.isFinite(producto.stock_actual) &&
-          producto.stock_actual >= item.cantidad;
+          producto.stock_actual >= item.cantidad && item.cantidad <= LIMITES_COMPRA.cantidadPorProducto;
 
         const nombreCelda = fila.insertCell();
         nombreCelda.textContent =
@@ -165,6 +173,7 @@
         cantidad.style.width = "100px";
         cantidad.min = "1";
         cantidad.step = "1";
+        cantidad.max = String(Math.min(producto?.stock_actual ?? 0, LIMITES_COMPRA.cantidadPorProducto));
         cantidad.value = item.cantidad;
         cantidad.disabled = producto?.activo !== true;
         cantidad.setAttribute(
@@ -207,6 +216,7 @@
       });
 
       contenido.appendChild(tabla);
+      revisar.disabled = hayProblemas;
 
       totalElemento.textContent =
         `${hayProblemas ? "Total provisional" : "Total de productos"}: ` +
@@ -247,6 +257,9 @@
       }
     }
 
+    document.getElementById("btn-revisar-pedido").addEventListener("click", () => {
+      if (!operacionCarritoEnCurso && !document.getElementById("btn-revisar-pedido").disabled) window.location.href = "checkout.html";
+    });
     protegerPagina(["cliente", "administrador"]);
   </script>
 </body>

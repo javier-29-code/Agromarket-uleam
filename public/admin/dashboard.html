@@ -10,22 +10,11 @@
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
   <link rel="stylesheet" href="../css/style.css">
 </head><body>
-<nav class="navbar navbar-dark" style="background-color:#1B5E20">
-  <div class="container-fluid">
-    <a class="navbar-brand fw-bold" href="dashboard.html"> Admin — Agro Market</a>
-    <div class="navbar-nav flex-row gap-3">
-      <a class="nav-link text-white" href="dashboard.html">Dashboard</a>
-      <a class="nav-link text-white" href="productos.html">Productos</a>
-      <a class="nav-link text-white" href="pedidos.html">Pedidos</a>
-      <a class="nav-link text-white" href="../catalogo.html">Ver sitio</a>
-      <a class="nav-link text-white" href="#" onclick="cerrarSesion()">Salir</a>
-    </div>
-  </div>
-</nav>
+<nav class="navbar navbar-dark bg-success"><div class="container-fluid gap-2"><a class="navbar-brand fw-bold" href="dashboard.html">Admin — Agro Market</a><div class="d-flex flex-wrap align-items-center gap-3"><a class="text-white" href="dashboard.html" aria-current="page">Dashboard</a><a class="text-white" href="productos.html">Productos</a><a class="text-white" href="categorias.html">Categorías</a><a class="text-white" href="pedidos.html">Pedidos</a><a class="text-white" href="usuarios.html">Usuarios</a><a class="text-white" href="zonas.html">Zonas</a><a class="text-white" href="../catalogo.html">Ver sitio</a><button type="button" class="btn btn-sm btn-outline-light" onclick="cerrarSesion()">Salir</button></div></div></nav>
 <div class="container py-4">
   <h4 class="fw-bold text-success mb-1">Dashboard</h4>
   <p class="text-muted small mb-4">
-    Acceso oculto — atajo: <kbd>Ctrl+Shift+A</kbd>
+    Acceso administrativo — atajo: <kbd>Ctrl+Shift+A</kbd>
   </p>
 
   <!-- Tarjetas de resumen -->
@@ -61,7 +50,7 @@
   </div>
 
   <!-- Accesos rápidos -->
-  <div class="row g-3">
+  <div class="row g-3"><div class="col-md-4"><a href="categorias.html" class="card border-0 shadow-sm p-3 text-decoration-none text-dark d-block"><div class="fw-bold">Categorías</div><small class="text-muted">Administrar categorías</small></a></div><div class="col-md-4"><a href="usuarios.html" class="card border-0 shadow-sm p-3 text-decoration-none text-dark d-block"><div class="fw-bold">Usuarios</div><small class="text-muted">Administrar usuarios</small></a></div><div class="col-md-4"><a href="zonas.html" class="card border-0 shadow-sm p-3 text-decoration-none text-dark d-block"><div class="fw-bold">Zonas</div><small class="text-muted">Administrar zonas</small></a></div>
     <div class="col-md-4">
       <a href="productos.html" class="card border-0 shadow-sm p-3 text-decoration-none text-dark d-block">
         <div class="fs-3 mb-1"></div>

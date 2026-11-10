@@ -32,27 +32,36 @@ function crearModeloUsuario(datos) {
     default: return null;
   }
 }
-async function obtenerUsuario(uid) {
-  const doc = await db.collection("usuarios").doc(uid).get();
-  return doc.exists ? { ...doc.data(), id: doc.id } : null;
-}
 function protegerPagina(rolesPermitidos = []) {
-  return auth.onAuthStateChanged(async user => {
-    if (!user) { window.location.href = "/login.html"; return; }
+  let detenerPerfil = null;
+  const detenerAuth = auth.onAuthStateChanged(async user => {
+    detenerPerfil?.(); detenerPerfil = null;
+    if (!user) { window.location.replace("/login.html"); return; }
     try {
       const datos = await obtenerUsuario(user.uid);
       if (auth.currentUser?.uid !== user.uid) return;
       const usuario = crearModeloUsuario(datos);
-      if (!usuario || !usuario.activo) { window.location.href = "/login.html"; return; }
+      if (!usuario || !usuario.activo) { window.location.replace("/login.html"); return; }
       if (!usuario.puedeAcceder(rolesPermitidos)) {
-        window.location.href = usuario.obtenerPaginaInicio(); return;
+        window.location.replace(usuario.obtenerPaginaInicio()); return;
       }
+      // Una desactivación de perfil se refleja también en las páginas abiertas.
+      detenerPerfil = escucharPerfilUsuario(user.uid, perfil => {
+        if (auth.currentUser?.uid !== user.uid) return;
+        const vigente = crearModeloUsuario(perfil);
+        if (!vigente || !vigente.activo) window.location.replace("/login.html");
+        else if (!vigente.puedeAcceder(rolesPermitidos)) window.location.replace(vigente.obtenerPaginaInicio());
+      }, error => {
+        console.error("Error al observar el perfil:", error);
+        mostrarToast("No se pudo comprobar tu acceso. Revisa la conexión y recarga.", "danger");
+      });
       if (typeof iniciarPagina === "function") await iniciarPagina();
     } catch (error) {
       console.error("Error al iniciar la página protegida:", error);
       mostrarToast("No se pudo cargar la página. Revisa tu conexión y recarga.", "danger");
     }
   });
+  return () => { detenerAuth(); detenerPerfil?.(); };
 }
 function cerrarSesion() {
   auth.signOut().then(() => { window.location.href = "/login.html"; });

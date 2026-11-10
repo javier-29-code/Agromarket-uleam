@@ -52,7 +52,7 @@
       const usuario = crearModeloUsuario(datos);
 
       if (!usuario) {
-        throw new Error("El perfil no existe o su rol no está reconocido.");
+        throw new Error("No se encontró un perfil válido. Si un registro quedó incompleto, abre Regístrate y completa el perfil con el mismo correo y contraseña; si ya tenías un perfil, contacta al administrador.");
       }
 
       if (!usuario.activo) {
