@@ -394,6 +394,40 @@ service cloud.firestore {
             == movimiento.cantidad;
       }
 
+      // La autorización se comprueba con el pedido anterior a la escritura.
+      function puedeCancelarPedido(pedido) {
+        return usuarioActivo()
+          && pedido.tipo in ["retiro", "delivery"]
+          && (
+            (esAdministrador() && pedido.estado in ["pendiente", "confirmado"])
+            || (get(/databases/$(database)/documents/usuarios/$(request.auth.uid)).data.rol == "cliente"
+              && pedido.cliente_id == request.auth.uid && pedido.estado == "pendiente")
+          );
+      }
+
+      // Vincular el aumento exacto de un producto con su cancelación atómica.
+      function devolucionProductoValida(productoId) {
+        let anterior = resource.data;
+        let nuevo = request.resource.data;
+        let pedidoId = nuevo.cancelacion_stock_id;
+        let pedidoAnterior = get(/databases/$(database)/documents/pedidos/$(pedidoId)).data;
+        let pedidoNuevo = getAfter(/databases/$(database)/documents/pedidos/$(pedidoId)).data;
+        let movimientoId = "cancelacion_" + pedidoId + "_" + productoId;
+        let movimiento = getAfter(/databases/$(database)/documents/movimientos_stock/$(movimientoId)).data;
+        return puedeCancelarPedido(pedidoAnterior)
+          && pedidoNuevo.estado == "cancelado" && pedidoNuevo.cancelado_en == request.time
+          && nuevo.diff(anterior).affectedKeys().hasOnly(["stock_actual", "updated_at", "cancelacion_stock_id"])
+          && anterior.stock_actual is number && anterior.stock_actual >= 0
+          && movimiento.pedido_id == pedidoId && movimiento.producto_id == productoId
+          && movimiento.usuario_id == request.auth.uid && movimiento.tipo == "entrada"
+          && movimiento.cantidad is int && movimiento.cantidad > 0 && movimiento.cantidad <= 10000
+          && movimiento.created_at == request.time
+          && movimiento.stock_anterior == anterior.stock_actual
+          && movimiento.stock_nuevo == nuevo.stock_actual
+          && nuevo.stock_actual == anterior.stock_actual + movimiento.cantidad
+          && nuevo.updated_at == request.time;
+      }
+
       // Validar el movimiento y la devolución real del stock.
       function movimientoCancelacionValido(movimientoId) {
         let movimiento = request.resource.data;
@@ -416,7 +450,7 @@ service cloud.firestore {
           /databases/$(database)/documents/productos/$(productoId)
         ).data;
 
-        return esAdministrador()
+        return puedeCancelarPedido(pedidoAnterior)
           && movimiento.keys().hasAll([
             "pedido_id", "producto_id", "usuario_id", "tipo",
             "cantidad", "motivo", "stock_anterior",
@@ -455,8 +489,9 @@ service cloud.firestore {
             == productoAnterior.stock_actual + movimiento.cantidad
           && productoNuevo.updated_at == request.time
           && productoNuevo.diff(productoAnterior).affectedKeys().hasOnly([
-            "stock_actual", "updated_at"
+            "stock_actual", "updated_at", "cancelacion_stock_id"
           ])
+          && (esAdministrador() || productoNuevo.cancelacion_stock_id == pedidoId)
           && movimiento.stock_anterior == productoAnterior.stock_actual
           && movimiento.stock_nuevo == productoNuevo.stock_actual;
       }
@@ -466,7 +501,7 @@ service cloud.firestore {
       let nuevo = request.resource.data;
       let ultimo = nuevo.historial[anterior.historial.size()];
 
-      return esAdministrador()
+      return puedeCancelarPedido(anterior)
         && anterior.tipo in ["retiro", "delivery"]
         && anterior.estado in ["pendiente", "confirmado"]
         && nuevo.estado == "cancelado"
@@ -549,8 +584,13 @@ service cloud.firestore {
 
       allow create, delete: if esAdministrador();
 
+      // Elegir la validación por el sentido del cambio evita consultar
+      // pedidos de otras compras al devolver existencias.
       allow update: if esAdministrador()
-        || descuentoCompraValido(productoId);
+        || (request.resource.data.stock_actual < resource.data.stock_actual
+          && descuentoCompraValido(productoId))
+        || (request.resource.data.stock_actual > resource.data.stock_actual
+          && devolucionProductoValida(productoId));
     }
 
     function historialAvanceDeliveryValido() {

@@ -119,9 +119,9 @@
         const boton = nodo("button", "btn btn-outline-danger btn-sm", "Cancelar pedido"); boton.type = "button";
         boton.addEventListener("click", () => {
           if (ocupado) return;
-          const motivo = window.prompt("Motivo de cancelación (1 a 288 caracteres):");
+          const motivo = window.prompt("Motivo de cancelación (1 a 287 caracteres):");
           if (motivo === null) return;
-          if (!motivo.trim() || motivo.trim().length > 288) { mostrarToast("Escribe un motivo de 1 a 288 caracteres.", "warning"); return; }
+          if (!motivo.trim() || motivo.trim().length > 287) { mostrarToast("Escribe un motivo de 1 a 287 caracteres.", "warning"); return; }
           ejecutar(() => cancelarPedido(pedido.id, motivo), "Pedido cancelado. El stock se devuelve una sola vez.");
         });
         acciones.append(boton);

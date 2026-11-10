@@ -961,16 +961,25 @@ async function cancelarPedidoRetiro(pedidoId, motivo) {
   return cancelarPedido(pedidoId, motivo);
 }
 
-async function cancelarPedido(pedidoId, motivo) {
+function puedeSolicitarCancelacionCliente(pedido, usuarioId = auth.currentUser?.uid) {
+  return !!usuarioId && pedido?.cliente_id === usuarioId
+    && pedido.estado === "pendiente" && ["retiro", "delivery"].includes(pedido.tipo);
+}
+
+async function cancelarPedidoCliente(pedidoId, motivo) {
+  return cancelarPedido(pedidoId, motivo, true);
+}
+
+async function cancelarPedido(pedidoId, motivo, soloPropioPendiente = false) {
   const usuario = auth.currentUser;
-  const motivoLimpio = motivo.trim();
+  const motivoLimpio = typeof motivo === "string" ? motivo.trim() : "";
 
   if (!usuario) {
     throw new Error("Debes iniciar sesión.");
   }
 
-  if (!motivoLimpio || motivoLimpio.length > 300) {
-    throw new Error("Escribe un motivo de entre 1 y 300 caracteres.");
+  if (!motivoLimpio || motivoLimpio.length > 287) {
+    throw new Error("Escribe un motivo de entre 1 y 287 caracteres.");
   }
 
   const pedidoRef = db.collection("pedidos").doc(pedidoId);
@@ -984,13 +993,23 @@ async function cancelarPedido(pedidoId, motivo) {
 
     const pedido = documento.data();
     const perfilDoc = await transaccion.get(db.collection("usuarios").doc(usuario.uid));
-    if (!perfilDoc.exists || perfilDoc.data().activo !== true || perfilDoc.data().rol !== "administrador") {
-      throw new Error("Solo un administrador activo puede cancelar el pedido.");
+    if (!perfilDoc.exists || perfilDoc.data().activo !== true) {
+      throw new Error("Tu perfil no está activo.");
     }
+    const administrador = perfilDoc.data().rol === "administrador";
+    const clientePropietario = perfilDoc.data().rol === "cliente" && pedido.cliente_id === usuario.uid;
+    if (!administrador && !clientePropietario) {
+      throw new Error("Solo puedes cancelar tus propios pedidos pendientes.");
+    }
+    if (soloPropioPendiente && pedido.cliente_id !== usuario.uid) {
+      throw new Error("Solo puedes cancelar tus propios pedidos pendientes.");
+    }
+    if (auth.currentUser?.uid !== usuario.uid) throw new Error("La sesión cambió. Recarga la página.");
 
-    // No devolver existencias nuevamente.
-    if (pedido.estado === "cancelado") {
-      return false;
+    // La transacción relee el estado en cada reintento: no devuelve stock dos veces.
+    if (pedido.estado === "cancelado") return false;
+    if ((!administrador || soloPropioPendiente) && pedido.estado !== "pendiente") {
+      throw new Error("El pedido ya no está pendiente. Solo administración puede revisar su cancelación.");
     }
 
     const modeloPedido = crearModeloPedido(pedido);
@@ -1070,7 +1089,8 @@ async function cancelarPedido(pedidoId, motivo) {
     detalles.forEach((detalle, indice) => {
       transaccion.update(referencias[indice], {
         stock_actual: saldos[indice].nuevo,
-        updated_at: fecha
+        updated_at: fecha,
+        cancelacion_stock_id: pedidoId
       });
 
       const movimientoRef = db.collection("movimientos_stock")

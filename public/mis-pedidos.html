@@ -26,6 +26,7 @@
     <button id="reintentar-pedidos" type="button" class="btn btn-outline-success btn-sm">Reconectar</button>
   </div>
   <p class="text-muted small">Los cambios de estado y los tiempos estimados se actualizan automáticamente mientras esta página está abierta.</p>
+  <div id="cancelacion-resultado" class="d-none" role="status" aria-live="polite"></div>
   <div id="pedidos-error" class="alert alert-danger d-none" role="alert"></div>
   <div id="lista-pedidos" aria-live="polite"><p>Cargando pedidos...</p></div>
 </main>
@@ -36,6 +37,7 @@
   let pedidosActuales = new Map();
   const historialesAbiertos = new Set();
   let temporizadorEstimaciones = null;
+  const pedidosCancelandose = new Set();
 
   function detenerActualizaciones() {
     versionEscucha++;
@@ -126,7 +128,49 @@
     for (const detalle of pedido.detalles ?? []) lista.append(textoPedido("li", "list-group-item px-0", `${detalle.nombre_producto}: ${detalle.cantidad} ${detalle.unidad ?? "unidad"} × ${fmt(detalle.precio_unitario)} = ${fmt(detalle.subtotal)}`));
     cuerpo.append(lista, textoPedido("p", "fw-bold text-success mb-0", `Total: ${fmt(pedido.total)}`));
     if (pedido.notas) cuerpo.append(textoPedido("p", "small mt-2 mb-0", `Observaciones: ${pedido.notas}`));
+    if (pedido.estado === "cancelado" && pedido.forma_pago === "transferencia") {
+      cuerpo.append(textoPedido("p", "alert alert-warning small mt-3", "La cancelación devuelve las existencias. Si realizaste la transferencia, coordina el reembolso con administración."));
+    }
+    if (puedeSolicitarCancelacionCliente(pedido)) {
+      const boton = textoPedido("button", "btn btn-outline-danger btn-sm mt-3", "Cancelar pedido");
+      boton.type = "button"; boton.dataset.cancelacionId = pedido.id;
+      boton.disabled = pedidosCancelandose.has(pedido.id);
+      boton.addEventListener("click", () => cancelarDesdeMisPedidos(pedido));
+      cuerpo.append(boton, textoPedido("p", "text-muted small mt-1 mb-0", "Puedes cancelar mientras el pedido siga pendiente. Las existencias se devolverán automáticamente."));
+    }
     cuerpo.append(crearHistorialPedido(pedido)); tarjeta.append(cuerpo); return tarjeta;
+  }
+  function actualizarBotonesCancelacion() {
+    document.querySelectorAll("[data-cancelacion-id]").forEach(boton => {
+      boton.disabled = pedidosCancelandose.has(boton.dataset.cancelacionId);
+    });
+  }
+  async function cancelarDesdeMisPedidos(pedido) {
+    if (pedidosCancelandose.has(pedido.id) || !puedeSolicitarCancelacionCliente(pedido)) return;
+    const usuarioId = auth.currentUser.uid;
+    const motivo = window.prompt("Motivo de cancelación (entre 1 y 287 caracteres):");
+    if (motivo === null) return;
+    const aviso = document.getElementById("cancelacion-resultado");
+    if (!motivo.trim() || motivo.trim().length > 287) {
+      aviso.className = "alert alert-warning";
+      aviso.textContent = "Escribe un motivo de entre 1 y 287 caracteres."; return;
+    }
+    pedidosCancelandose.add(pedido.id); actualizarBotonesCancelacion();
+    aviso.className = "alert alert-info"; aviso.textContent = "Cancelando pedido...";
+    try {
+      const cancelado = await cancelarPedidoCliente(pedido.id, motivo);
+      if (auth.currentUser?.uid !== usuarioId) return;
+      aviso.className = "alert alert-success";
+      aviso.textContent = cancelado ? "Pedido cancelado y existencias devueltas." : "El pedido ya estaba cancelado.";
+      if (pedido.forma_pago === "transferencia") aviso.textContent += " Si realizaste la transferencia, coordina el reembolso con administración.";
+    } catch (error) {
+      if (auth.currentUser?.uid !== usuarioId) return;
+      console.error("Error al cancelar tu pedido:", error);
+      aviso.className = "alert alert-danger";
+      aviso.textContent = error.code
+        ? "No se pudo confirmar la cancelación. Reconecta para consultar el estado y reintenta si continúa pendiente."
+        : error.message;
+    } finally { pedidosCancelandose.delete(pedido.id); actualizarBotonesCancelacion(); }
   }
   function crearHistorialPedido(pedido) {
     const contenedor = textoPedido("details", "mt-3", "");
